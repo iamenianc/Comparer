@@ -4,12 +4,15 @@ let scanResult = null;
 let currentFilter = 'all';
 let searchQuery = '';
 const collapsedFolders = new Set();
+let lastScanParams = null;
+let eventSource = null;
 
 // DOM elements
 const leftPathInput = document.getElementById('left-path');
 const rightPathInput = document.getElementById('right-path');
 const scanBtn = document.getElementById('scan-btn');
 const recursiveCheckbox = document.getElementById('option-recursive');
+const scrollLockCheckbox = document.getElementById('option-scrolllock');
 const searchInput = document.getElementById('search-input');
 const filterTabs = document.querySelectorAll('.filter-tab');
 const gridBody = document.getElementById('comparison-grid-body');
@@ -20,6 +23,33 @@ const countLeft = document.getElementById('count-left');
 const countRight = document.getElementById('count-right');
 const statusText = document.getElementById('status-text');
 const summaryText = document.getElementById('scan-summary-text');
+
+// Undo banner elements
+const undoBanner = document.getElementById('undo-banner');
+const undoBannerMessage = document.getElementById('undo-banner-message');
+const undoBtn = document.getElementById('undo-btn');
+const closeUndoBannerBtn = document.getElementById('close-undo-banner-btn');
+
+// Diff Modal elements
+const diffModal = document.getElementById('diff-modal');
+const diffModalTitle = document.getElementById('diff-modal-title');
+const diffModalSubtitle = document.getElementById('diff-modal-subtitle');
+const closeDiffModalBtn = document.getElementById('close-diff-modal-btn');
+const diffTextContainer = document.getElementById('diff-text-container');
+const diffLeftCode = document.getElementById('diff-left-code');
+const diffRightCode = document.getElementById('diff-right-code');
+const diffBinaryContainer = document.getElementById('diff-binary-container');
+const binaryLeftHeader = document.getElementById('binary-left-header');
+const binaryRightHeader = document.getElementById('binary-right-header');
+const binaryLeftSize = document.getElementById('binary-left-size');
+const binaryRightSize = document.getElementById('binary-right-size');
+const binaryLeftMtime = document.getElementById('binary-left-mtime');
+const binaryRightMtime = document.getElementById('binary-right-mtime');
+const binaryLeftHash = document.getElementById('binary-left-hash');
+const binaryRightHash = document.getElementById('binary-right-hash');
+const diffModalKeepLeft = document.getElementById('diff-modal-keep-left');
+const diffModalKeepRight = document.getElementById('diff-modal-keep-right');
+const closeDiffModalFooterBtn = document.getElementById('close-diff-modal-footer-btn');
 
 // Helper: Format bytes to human readable string
 function formatBytes(bytes) {
@@ -54,6 +84,12 @@ async function runScan() {
     return;
   }
 
+  lastScanParams = {
+    leftPath,
+    rightPath,
+    recursive: recursiveCheckbox.checked
+  };
+
   // Set scanning UI state
   scanBtn.disabled = true;
   scanBtn.querySelector('span:last-child').textContent = 'Scanning...';
@@ -70,11 +106,7 @@ async function runScan() {
     const response = await fetch('/api/scan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        leftPath,
-        rightPath,
-        recursive: recursiveCheckbox.checked
-      })
+      body: JSON.stringify(lastScanParams)
     });
 
     const data = await response.json();
@@ -93,7 +125,9 @@ async function runScan() {
 
     collapsedFolders.clear();
     updateTabCounts();
+    updateHeaders();
     renderGrid();
+    setupSSEWatcher();
     statusText.textContent = 'Scan Completed';
   } catch (error) {
     console.error('Scan error:', error);
@@ -110,6 +144,333 @@ async function runScan() {
     scanBtn.disabled = false;
     scanBtn.querySelector('span:last-child').textContent = 'Compare';
   }
+}
+
+// Helper: condensation algorithm for folder paths
+function condensePaths(left, right) {
+  const pathA = left.replace(/\//g, '\\');
+  const pathB = right.replace(/\//g, '\\');
+
+  const partsA = pathA.split('\\');
+  const partsB = pathB.split('\\');
+
+  const driveA = partsA[0] || '';
+  const driveB = partsB[0] || '';
+
+  const nameA = partsA[partsA.length - 1] || '';
+  const nameB = partsB[partsB.length - 1] || '';
+
+  if (nameA !== nameB) {
+    return {
+      left: partsA.length > 1 ? `${driveA}\\...\\${nameA}` : pathA,
+      right: partsB.length > 1 ? `${driveB}\\...\\${nameB}` : pathB
+    };
+  }
+
+  // If identical head names, backtrack until a naming difference is found
+  let diffIdx = 1;
+  while (diffIdx < partsA.length && diffIdx < partsB.length) {
+    const subA = partsA[partsA.length - 1 - diffIdx];
+    const subB = partsB[partsB.length - 1 - diffIdx];
+    if (subA !== subB) {
+      break;
+    }
+    diffIdx++;
+  }
+
+  const suffixA = partsA.slice(partsA.length - 1 - diffIdx).join('\\');
+  const suffixB = partsB.slice(partsB.length - 1 - diffIdx).join('\\');
+
+  return {
+    left: partsA.length > diffIdx + 1 ? `${driveA}\\...\\${suffixA}` : pathA,
+    right: partsB.length > diffIdx + 1 ? `${driveB}\\...\\${suffixB}` : pathB
+  };
+}
+
+// Update the grid headers with condensed paths
+function updateHeaders() {
+  if (!scanResult) return;
+  const condensed = condensePaths(scanResult.leftPath, scanResult.rightPath);
+  const leftHeader = document.querySelector('.header-col.col-pane-left');
+  const rightHeader = document.querySelector('.header-col.col-pane-right');
+  if (leftHeader) leftHeader.textContent = condensed.left;
+  if (rightHeader) rightHeader.textContent = condensed.right;
+}
+
+// Setup EventSource for SSE watcher connection
+function setupSSEWatcher() {
+  if (eventSource) {
+    eventSource.close();
+  }
+  eventSource = new EventSource('/api/watch');
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      console.log('Real-time SSE event:', data);
+      refreshScanSilent();
+    } catch (e) {
+      console.error('Error parsing SSE event:', e);
+    }
+  };
+  eventSource.onerror = (err) => {
+    console.warn('SSE connection interrupted, retrying...', err);
+  };
+}
+
+// Silent scan refresh keeping scroll and folders
+async function refreshScanSilent() {
+  if (!lastScanParams) return;
+  try {
+    const response = await fetch('/api/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lastScanParams)
+    });
+    const data = await response.json();
+    if (response.ok) {
+      scanResult = data;
+      updateTabCounts();
+      updateHeaders();
+
+      const scrollParent = document.querySelector('.grid-body-wrapper');
+      const scrollTop = scrollParent.scrollTop;
+      renderGrid();
+      scrollParent.scrollTop = scrollTop;
+    }
+  } catch (error) {
+    console.error('Silent refresh failed:', error);
+  }
+}
+
+// Helper: check if file is binary
+function isBinaryFile(filename) {
+  const binaryExtensions = [
+    'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'ico', 'svg',
+    'zip', 'tar', 'gz', 'rar', '7z', 'bz2',
+    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+    'exe', 'dll', 'so', 'dylib', 'bin', 'class', 'jar', 'war',
+    'mp3', 'mp4', 'mkv', 'avi', 'mov', 'wav', 'flac',
+    'db', 'sqlite', 'mdb'
+  ];
+  const ext = filename.split('.').pop().toLowerCase();
+  return binaryExtensions.includes(ext);
+}
+
+// Helper: request MD5 hash of a file
+async function getFileHashFromServer(filePath) {
+  try {
+    const res = await fetch('/api/hash', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath })
+    });
+    const data = await res.json();
+    return data.hash || 'Unavailable';
+  } catch (e) {
+    console.error('Failed to get file hash:', e);
+    return 'Error';
+  }
+}
+
+// Sync file API handler
+async function performSyncAction(relativePath, action) {
+  if (!scanResult) return;
+  try {
+    const response = await fetch('/api/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        leftPath: scanResult.leftPath,
+        rightPath: scanResult.rightPath,
+        relativePath,
+        action
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to complete sync operation.');
+    }
+    
+    // Show Google-styled Undo toast banner
+    showUndoToast(relativePath, action);
+    
+    // Perform silent refresh
+    await refreshScanSilent();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+// Undo API handler
+async function undoLastAction() {
+  try {
+    const response = await fetch('/api/undo', { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to undo action.');
+    }
+    hideUndoToast();
+    statusText.textContent = 'Undo completed';
+    await refreshScanSilent();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+// Toast Banner controls
+function showUndoToast(relativePath, action) {
+  let actionStr = '';
+  if (action === 'keepLeft') actionStr = 'Left copied to Right';
+  else if (action === 'keepRight') actionStr = 'Right copied to Left';
+  else if (action === 'deleteLeft') actionStr = 'Left deleted';
+  else if (action === 'deleteRight') actionStr = 'Right deleted';
+
+  undoBannerMessage.innerHTML = `Sync completed: <strong>${relativePath}</strong> (${actionStr}).`;
+  undoBanner.classList.remove('hidden');
+}
+
+// Hide Undo toast
+function hideUndoToast() {
+  undoBanner.classList.add('hidden');
+}
+
+// Show Diff Modal side-by-side
+async function showDiffModal(file) {
+  if (!scanResult) return;
+  const relativePath = file.relativePath;
+  diffModalSubtitle.textContent = relativePath;
+  diffModalTitle.textContent = `Comparing File: ${file.name}`;
+  
+  // Set headers in the binary or text container to reflect exact folders
+  const condensed = condensePaths(scanResult.leftPath, scanResult.rightPath);
+  
+  if (isBinaryFile(file.name)) {
+    // Show binary
+    diffTextContainer.classList.add('hidden');
+    diffBinaryContainer.classList.remove('hidden');
+    
+    binaryLeftHeader.textContent = condensed.left;
+    binaryRightHeader.textContent = condensed.right;
+    
+    // Set basic metadata
+    binaryLeftSize.textContent = file.left ? formatBytes(file.left.size) : 'Absent';
+    binaryRightSize.textContent = file.right ? formatBytes(file.right.size) : 'Absent';
+    
+    binaryLeftMtime.textContent = file.left ? formatDate(file.left.mtime) : 'Absent';
+    binaryRightMtime.textContent = file.right ? formatDate(file.right.mtime) : 'Absent';
+    
+    binaryLeftHash.textContent = 'Calculating...';
+    binaryRightHash.textContent = 'Calculating...';
+    
+    // Open modal first to make UI feel snappy
+    diffModal.classList.remove('hidden');
+    
+    // Calculate hashes on-demand
+    if (file.left) {
+      const leftFull = scanResult.leftPath + '/' + relativePath;
+      getFileHashFromServer(leftFull).then(hash => {
+        binaryLeftHash.textContent = hash;
+      });
+    } else {
+      binaryLeftHash.textContent = '-';
+    }
+    
+    if (file.right) {
+      const rightFull = scanResult.rightPath + '/' + relativePath;
+      getFileHashFromServer(rightFull).then(hash => {
+        binaryRightHash.textContent = hash;
+      });
+    } else {
+      binaryRightHash.textContent = '-';
+    }
+    
+  } else {
+    // Show text diff
+    diffBinaryContainer.classList.add('hidden');
+    diffTextContainer.classList.remove('hidden');
+    
+    const leftHeaderEl = document.getElementById('diff-left-header');
+    const rightHeaderEl = document.getElementById('diff-right-header');
+    leftHeaderEl.textContent = `${condensed.left} (Left)`;
+    rightHeaderEl.textContent = `${condensed.right} (Right)`;
+    
+    diffLeftCode.innerHTML = 'Loading diff...';
+    diffRightCode.innerHTML = 'Loading diff...';
+    
+    diffModal.classList.remove('hidden');
+    
+    try {
+      const res = await fetch('/api/diff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leftPath: scanResult.leftPath,
+          rightPath: scanResult.rightPath,
+          relativePath
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      
+      // Render side-by-side lines
+      diffLeftCode.innerHTML = '';
+      diffRightCode.innerHTML = '';
+      
+      data.rows.forEach(row => {
+        // Left pane rendering
+        const leftLineDiv = document.createElement('div');
+        leftLineDiv.className = 'diff-line';
+        if (row.left === null) {
+          leftLineDiv.classList.add('type-empty');
+          leftLineDiv.innerHTML = `<span class="diff-line-num"></span><span class="diff-line-content"></span>`;
+        } else {
+          leftLineDiv.classList.add(`type-${row.left.type}`);
+          leftLineDiv.innerHTML = `<span class="diff-line-num">${row.left.lineNum}</span><span class="diff-line-content">${escapeHtml(row.left.text)}</span>`;
+        }
+        diffLeftCode.appendChild(leftLineDiv);
+        
+        // Right pane rendering
+        const rightLineDiv = document.createElement('div');
+        rightLineDiv.className = 'diff-line';
+        if (row.right === null) {
+          rightLineDiv.classList.add('type-empty');
+          rightLineDiv.innerHTML = `<span class="diff-line-num"></span><span class="diff-line-content"></span>`;
+        } else {
+          rightLineDiv.classList.add(`type-${row.right.type}`);
+          rightLineDiv.innerHTML = `<span class="diff-line-num">${row.right.lineNum}</span><span class="diff-line-content">${escapeHtml(row.right.text)}</span>`;
+        }
+        diffRightCode.appendChild(rightLineDiv);
+      });
+      
+    } catch (err) {
+      diffLeftCode.textContent = `Error loading diff: ${err.message}`;
+      diffRightCode.textContent = `Error loading diff: ${err.message}`;
+    }
+  }
+  
+  // Wire up keep version modal action buttons
+  diffModalKeepLeft.onclick = () => {
+    performSyncAction(relativePath, 'keepLeft');
+    diffModal.classList.add('hidden');
+  };
+  diffModalKeepRight.onclick = () => {
+    performSyncAction(relativePath, 'keepRight');
+    diffModal.classList.add('hidden');
+  };
+  
+  // Enable or disable buttons depending on existence
+  diffModalKeepLeft.disabled = !file.left;
+  diffModalKeepRight.disabled = !file.right;
+}
+
+// Simple HTML escaper
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 // Update filter counts badge numbers
@@ -281,6 +642,14 @@ function renderGrid() {
               <span class="file-mtime" title="${file.left.mtime}">${formatDate(file.left.mtime)}</span>
             </div>
           `;
+        } else {
+          // Ghost Placeholder for absent left file
+          leftCell.innerHTML = `
+            <div class="pane-details ghost-placeholder" title="Absent from Left">
+              <span class="file-size">${formatBytes(file.right.size)} (Absent)</span>
+              <span class="file-mtime">-</span>
+            </div>
+          `;
         }
         row.appendChild(leftCell);
 
@@ -300,6 +669,14 @@ function renderGrid() {
               <span class="file-mtime" title="${file.right.mtime}">${formatDate(file.right.mtime)}</span>
             </div>
           `;
+        } else {
+          // Ghost Placeholder for absent right file
+          rightCell.innerHTML = `
+            <div class="pane-details ghost-placeholder" title="Absent from Right">
+              <span class="file-size">${formatBytes(file.left.size)} (Absent)</span>
+              <span class="file-mtime">-</span>
+            </div>
+          `;
         }
         row.appendChild(rightCell);
 
@@ -309,42 +686,61 @@ function renderGrid() {
   });
 }
 
-// Helper: Build Status / Newer Badge HTML
+// Helper: Build Status / Newer Badge HTML with Conflict Resolution Buttons
 function getStatusCellHtml(file) {
   if (file.status === 'left-only') {
-    return `<span class="status-badge badge-left-only">Left Only</span>`;
+    return `
+      <div class="conflict-badge-wrapper">
+        <span class="status-badge badge-left-only">Left Only</span>
+        <div class="grid-actions">
+          <button class="grid-action-btn btn-keep-left" data-action="keepLeft" data-path="${file.relativePath}">
+            <span class="material-symbols-outlined">arrow_forward</span> Sync Right
+          </button>
+          <button class="grid-action-btn" data-action="deleteLeft" data-path="${file.relativePath}" title="Delete from Left">
+            <span class="material-symbols-outlined">delete</span>
+          </button>
+        </div>
+      </div>
+    `;
   }
   if (file.status === 'right-only') {
-    return `<span class="status-badge badge-right-only">Right Only</span>`;
+    return `
+      <div class="conflict-badge-wrapper">
+        <span class="status-badge badge-right-only">Right Only</span>
+        <div class="grid-actions">
+          <button class="grid-action-btn btn-keep-right" data-action="keepRight" data-path="${file.relativePath}">
+            <span class="material-symbols-outlined">arrow_back</span> Sync Left
+          </button>
+          <button class="grid-action-btn" data-action="deleteRight" data-path="${file.relativePath}" title="Delete from Right">
+            <span class="material-symbols-outlined">delete</span>
+          </button>
+        </div>
+      </div>
+    `;
   }
   if (file.status === 'identical') {
     return `<span class="status-badge badge-identical">Identical</span>`;
   }
   
-  // Modified File Layout
+  // Modified File Layout (Conflict)
   if (file.status === 'modified') {
-    let arrowHtml = '';
-    
-    if (file.newerSide === 'left') {
-      arrowHtml = `
-        <div class="newer-arrow-wrapper" title="Left version is newer by ${file.timeDiffStr}">
-          <span class="newer-indicator">Newer (${file.timeDiffStr})</span>
-          <span class="material-symbols-outlined arrow-icon">arrow_forward</span>
-        </div>
-      `;
-    } else if (file.newerSide === 'right') {
-      arrowHtml = `
-        <div class="newer-arrow-wrapper" title="Right version is newer by ${file.timeDiffStr}">
-          <span class="material-symbols-outlined arrow-icon">arrow_back</span>
-          <span class="newer-indicator right-side-newer">Newer (${file.timeDiffStr})</span>
-        </div>
-      `;
-    }
-
     return `
-      <div style="display:flex; flex-direction:column; align-items:center; gap:2px;">
-        <span class="status-badge badge-modified">Diff</span>
-        ${arrowHtml}
+      <div class="conflict-badge-wrapper">
+        <div class="conflict-warning-row">
+          <span class="material-symbols-outlined conflict-icon">warning</span>
+          <span class="status-badge badge-modified">Diff</span>
+        </div>
+        <div class="grid-actions">
+          <button class="grid-action-btn btn-keep-left" data-action="keepLeft" data-path="${file.relativePath}" title="Keep Left version on both sides">
+            <span class="material-symbols-outlined">arrow_forward</span> Keep L
+          </button>
+          <button class="grid-action-btn btn-keep-right" data-action="keepRight" data-path="${file.relativePath}" title="Keep Right version on both sides">
+            <span class="material-symbols-outlined">arrow_back</span> Keep R
+          </button>
+          <button class="grid-action-btn" data-action="viewDiff" data-path="${file.relativePath}" title="View side-by-side diff">
+            <span class="material-symbols-outlined">difference</span> Diff
+          </button>
+        </div>
       </div>
     `;
   }
@@ -366,6 +762,64 @@ filterTabs.forEach(tab => {
     currentFilter = tab.getAttribute('data-filter');
     renderGrid();
   });
+});
+
+// Event Delegation for Grid Action buttons
+gridBody.addEventListener('click', (e) => {
+  const button = e.target.closest('.grid-action-btn');
+  if (!button) return;
+
+  const action = button.getAttribute('data-action');
+  const relativePath = button.getAttribute('data-path');
+  if (!action || !relativePath) return;
+
+  const fileObj = scanResult.files.find(f => f.relativePath === relativePath);
+  if (!fileObj) return;
+
+  if (action === 'viewDiff') {
+    showDiffModal(fileObj);
+  } else {
+    // Confirm deletes for safety, keep syncs seamless
+    if (action.startsWith('delete')) {
+      if (!confirm(`Are you sure you want to delete ${relativePath} from the ${action === 'deleteLeft' ? 'Left' : 'Right'} folder?`)) {
+        return;
+      }
+    }
+    performSyncAction(relativePath, action);
+  }
+});
+
+// Undo Banner action
+undoBtn.addEventListener('click', undoLastAction);
+closeUndoBannerBtn.addEventListener('click', hideUndoToast);
+
+// Modal Closing controls
+const closeModal = () => diffModal.classList.add('hidden');
+closeDiffModalBtn.addEventListener('click', closeModal);
+closeDiffModalFooterBtn.addEventListener('click', closeModal);
+
+// Double-Scroll sync lock for text diff code panes
+let isSyncingLeftScroll = false;
+let isSyncingRightScroll = false;
+
+diffLeftCode.addEventListener('scroll', () => {
+  if (!scrollLockCheckbox.checked) return;
+  if (!isSyncingLeftScroll) {
+    isSyncingRightScroll = true;
+    diffRightCode.scrollTop = diffLeftCode.scrollTop;
+    diffRightCode.scrollLeft = diffLeftCode.scrollLeft;
+    isSyncingRightScroll = false;
+  }
+});
+
+diffRightCode.addEventListener('scroll', () => {
+  if (!scrollLockCheckbox.checked) return;
+  if (!isSyncingRightScroll) {
+    isSyncingLeftScroll = true;
+    diffLeftCode.scrollTop = diffRightCode.scrollTop;
+    diffLeftCode.scrollLeft = diffRightCode.scrollLeft;
+    isSyncingLeftScroll = false;
+  }
 });
 
 // Load previously saved paths on start

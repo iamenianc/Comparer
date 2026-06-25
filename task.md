@@ -1,25 +1,21 @@
-# Phase 1 Checklist: Core Comparison Engine & Layout
-
-- [x] Project Setup
-  - [x] Initialize Node.js project (`npm init -y`)
-  - [x] Install dependencies (`express`, `diff`, `mime-types`)
-  - [x] Configure `package.json` with running scripts
-  - [x] Create mock folders (`tests/mock_left` and `tests/mock_right`) with dummy test files
+# Phase 2 Checklist: Synchronization & Conflict Resolution
 
 - [x] Backend Implementation (`server.js`)
-  - [x] Initialize Express app and static asset server configuration
-  - [x] Implement directory recursion engine that maps filenames, sizes, and timestamps
-  - [x] Create `/api/scan` endpoint with comparison calculations and relative-time calculations
-  - [x] Verify endpoint response logic using unit or script tests
-
-- [x] Frontend Setup (`public/`)
-  - [x] Create semantic HTML structure (`public/index.html`)
-  - [x] Implement Google Antigravity-inspired light-mode UI design system in CSS (`public/style.css`)
-  - [x] Build layout modules: path inputs, search filter bar, scroll-lock button, split pane grids
-  - [x] Write dynamic rendering logic in JS (`public/app.js`) to display folder comparison data
-  - [x] Wire up scroll synchronization for left and right pane displays
-  - [x] Enable real-time file search/filtering
-
-- [x] Verification
-  - [x] Run the application locally
-  - [x] Launch `browser_subagent` to visually verify styling, layout, filters, and compared folders
+  - [x] Implement file hashing endpoint (`/api/hash`)
+  - [x] Implement text difference endpoint (`/api/diff`)
+  - [x] Implement manual sync endpoint (`/api/sync`)
+  - [x] Implement undo/backup buffer & `/api/undo` endpoint
+  - [x] Implement real-time directory watcher (`chokidar`) and SSE stream (`/api/watch`)
+- [x] Frontend Setup & UI
+  - [x] Update `index.html` structure with diff modal and undo toast banner
+  - [x] Update `style.css` with layout rules for diff, conflict warning/buttons, undo toast, and ghost placeholders
+  - [x] Update `app.js` frontend logic
+    - [x] Dynamic condensed header paths
+    - [x] Ghost placeholders for missing files
+    - [x] Inline conflict resolution actions
+    - [x] Real-time SSE watcher connection & silent grid refresh
+    - [x] Text & binary diff modal displaying differences side-by-side
+    - [x] Toast banner displaying Undo button linked to backend undo action
+- [x] Verification & Tests
+  - [x] Create mock conflict files
+  - [x] Run `browser_subagent` to verify all Phase 2 features and styling

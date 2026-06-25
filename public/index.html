@@ -105,6 +105,18 @@
       </div>
     </section>
 
+    <!-- Undo Transaction Banner -->
+    <div id="undo-banner" class="undo-banner hidden">
+      <div class="undo-banner-content">
+        <span class="material-symbols-outlined notification-icon">info</span>
+        <span id="undo-banner-message">Sync action completed successfully.</span>
+        <button id="undo-btn" class="undo-link-btn">Undo last action</button>
+      </div>
+      <button id="close-undo-banner-btn" class="close-banner-btn">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
+
     <!-- Directory Comparison Grid -->
     <main class="grid-panel">
       <div class="grid-header">
@@ -136,6 +148,72 @@
         No scan performed
       </div>
     </footer>
+  </div>
+
+  <!-- Diff Viewer Modal -->
+  <div id="diff-modal" class="modal-overlay hidden">
+    <div class="modal-container">
+      <header class="modal-header">
+        <div class="modal-title-group">
+          <span class="material-symbols-outlined modal-logo-icon">difference</span>
+          <div class="modal-header-text">
+            <h3 id="diff-modal-title">File Comparison</h3>
+            <span id="diff-modal-subtitle" class="modal-subtitle">relativePath</span>
+          </div>
+        </div>
+        <button id="close-diff-modal-btn" class="close-modal-btn">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </header>
+      
+      <!-- Split View Diff Container -->
+      <div class="modal-body">
+        <div id="diff-text-container" class="diff-split-container">
+          <div class="diff-pane" id="diff-left-pane">
+            <div class="diff-pane-header" id="diff-left-header">Left Version</div>
+            <pre class="diff-code" id="diff-left-code"></pre>
+          </div>
+          <div class="diff-pane" id="diff-right-pane">
+            <div class="diff-pane-header" id="diff-right-header">Right Version</div>
+            <pre class="diff-code" id="diff-right-code"></pre>
+          </div>
+        </div>
+        
+        <div id="diff-binary-container" class="diff-binary-container hidden">
+          <div class="binary-grid">
+            <div class="binary-header-col">Property</div>
+            <div class="binary-header-col" id="binary-left-header">Left File</div>
+            <div class="binary-header-col" id="binary-right-header">Right File</div>
+            
+            <div class="binary-row">
+              <div class="binary-label">File Size</div>
+              <div class="binary-val" id="binary-left-size">-</div>
+              <div class="binary-val" id="binary-right-size">-</div>
+            </div>
+            <div class="binary-row">
+              <div class="binary-label">Modified Time</div>
+              <div class="binary-val" id="binary-left-mtime">-</div>
+              <div class="binary-val" id="binary-right-mtime">-</div>
+            </div>
+            <div class="binary-row">
+              <div class="binary-label">MD5 Hash</div>
+              <div class="binary-val" id="binary-left-hash">-</div>
+              <div class="binary-val" id="binary-right-hash">-</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <footer class="modal-footer">
+        <button id="diff-modal-keep-left" class="primary-btn flex-btn">
+          <span class="material-symbols-outlined">arrow_forward</span> Keep Left
+        </button>
+        <button id="diff-modal-keep-right" class="primary-btn flex-btn">
+          <span class="material-symbols-outlined">arrow_back</span> Keep Right
+        </button>
+        <button id="close-diff-modal-footer-btn" class="secondary-btn">Close</button>
+      </footer>
+    </div>
   </div>
 
   <script src="app.js"></script>
