@@ -56,12 +56,12 @@
 
           <div class="options-group">
             <label class="checkbox-label">
-              <input type="checkbox" id="option-recursive" checked>
-              <span>Scan subfolders recursively</span>
+              <input type="checkbox" id="option-recursive">
+              <span>Subfolders</span>
             </label>
             <label class="checkbox-label">
               <input type="checkbox" id="option-scrolllock" checked>
-              <span>Sync pane scroll position</span>
+              <span>Sync scroll</span>
             </label>
           </div>
         </div>
@@ -97,18 +97,6 @@
       </div>
     </header>
 
-    <!-- Undo Transaction Banner -->
-    <div id="undo-banner" class="undo-banner hidden">
-      <div class="undo-banner-content">
-        <span class="material-symbols-outlined notification-icon">info</span>
-        <span id="undo-banner-message">Sync action completed successfully.</span>
-        <button id="undo-btn" class="undo-link-btn">Undo last action</button>
-      </div>
-      <button id="close-undo-banner-btn" class="close-banner-btn">
-        <span class="material-symbols-outlined">close</span>
-      </button>
-    </div>
-
     <!-- Directory Comparison Grid -->
     <main class="grid-panel">
       <div class="grid-scroll-container">
@@ -131,10 +119,6 @@
           <div class="header-super-col" id="super-header-right">
             <span>Right Folder</span>
           </div>
-          <div class="header-col header-sub col-left-action">
-            <span></span>
-            <div class="resize-handle" data-col="left-action"></div>
-          </div>
           <div class="header-col header-sub col-left-date">
             <span>Date</span>
             <div class="resize-handle" data-col="left-date"></div>
@@ -143,9 +127,9 @@
             <span>Size</span>
             <div class="resize-handle" data-col="left-size"></div>
           </div>
-          <div class="header-col header-sub col-right-action">
+          <div class="header-col header-sub col-left-action">
             <span></span>
-            <div class="resize-handle" data-col="right-action"></div>
+            <div class="resize-handle" data-col="left-action"></div>
           </div>
           <div class="header-col header-sub col-right-date">
             <span>Date</span>
@@ -153,6 +137,10 @@
           </div>
           <div class="header-col header-sub col-right-size">
             <span>Size</span>
+            <div class="resize-handle" data-col="right-size"></div>
+          </div>
+          <div class="header-col header-sub col-right-action">
+            <span></span>
           </div>
         </div>
         
@@ -176,6 +164,18 @@
         No scan performed
       </div>
     </footer>
+
+    <!-- Undo Toast (fixed, floats above footer) -->
+    <div id="undo-banner" class="undo-banner hidden">
+      <div class="undo-banner-content">
+        <span class="material-symbols-outlined notification-icon">info</span>
+        <span id="undo-banner-message">Sync action completed successfully.</span>
+        <button id="undo-btn" class="undo-link-btn">Undo last action</button>
+      </div>
+      <button id="close-undo-banner-btn" class="close-banner-btn">
+        <span class="material-symbols-outlined">close</span>
+      </button>
+    </div>
   </div>
 
   <!-- Diff Viewer Modal -->
@@ -189,9 +189,18 @@
             <span id="diff-modal-subtitle" class="modal-subtitle">relativePath</span>
           </div>
         </div>
-        <button id="close-diff-modal-btn" class="close-modal-btn">
-          <span class="material-symbols-outlined">close</span>
-        </button>
+        <div class="modal-header-actions">
+          <button id="diff-diffs-only-btn" class="modal-action-btn" title="Show diffs only">
+            <span class="material-symbols-outlined">format_list_bulleted</span>
+            <span class="modal-action-label">Diffs only</span>
+          </button>
+          <button id="diff-maximize-btn" class="modal-action-btn" title="Maximize">
+            <span class="material-symbols-outlined">open_in_full</span>
+          </button>
+          <button id="close-diff-modal-btn" class="close-modal-btn">
+            <span class="material-symbols-outlined">close</span>
+          </button>
+        </div>
       </header>
       
       <!-- Split View Diff Container -->
@@ -233,11 +242,11 @@
       </div>
       
       <footer class="modal-footer">
-        <button id="diff-modal-keep-new" class="primary-btn flex-btn btn-keep-new-modal">
-          <span class="material-symbols-outlined">new_releases</span> Keep New
+        <button id="diff-modal-keep-left" class="primary-btn flex-btn btn-keep-new-modal">
+          <span class="material-symbols-outlined">arrow_back</span><span>Replace with Left</span>
         </button>
-        <button id="diff-modal-keep-old" class="primary-btn flex-btn btn-keep-old-modal">
-          <span class="material-symbols-outlined">history</span> Keep Old
+        <button id="diff-modal-keep-right" class="primary-btn flex-btn btn-keep-old-modal">
+          <span class="material-symbols-outlined">arrow_forward</span><span>Replace with Right</span>
         </button>
         <button id="close-diff-modal-footer-btn" class="secondary-btn">Close</button>
       </footer>

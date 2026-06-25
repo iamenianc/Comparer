@@ -53,8 +53,8 @@ const binaryLeftMtime = document.getElementById('binary-left-mtime');
 const binaryRightMtime = document.getElementById('binary-right-mtime');
 const binaryLeftHash = document.getElementById('binary-left-hash');
 const binaryRightHash = document.getElementById('binary-right-hash');
-const diffModalKeepNew = document.getElementById('diff-modal-keep-new');
-const diffModalKeepOld = document.getElementById('diff-modal-keep-old');
+const diffModalKeepLeft = document.getElementById('diff-modal-keep-left');
+const diffModalKeepRight = document.getElementById('diff-modal-keep-right');
 const closeDiffModalFooterBtn = document.getElementById('close-diff-modal-footer-btn');
 
 // Helper: Format bytes to human readable string
@@ -66,18 +66,43 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-// Helper: Format ISO date string to clean local date time
-function formatDate(dateStr) {
+// Helper: Format date. Time (h:mm AM/PM) is shown only when both sides fall on
+// the same calendar day. Seconds are appended only when both sides share the
+// same minute but differ at the second level.
+function formatDate(dateStr, compareStr) {
   if (!dateStr) return '';
   const date = new Date(dateStr);
   const pad = (num) => String(num).padStart(2, '0');
   const year = date.getFullYear();
   const month = pad(date.getMonth() + 1);
   const day = pad(date.getDate());
-  const hours = pad(date.getHours());
+  const dateOnly = `${year}-${month}-${day}`;
+
+  if (!compareStr) return dateOnly;
+
+  const other = new Date(compareStr);
+  const sameDay =
+    date.getFullYear() === other.getFullYear() &&
+    date.getMonth() === other.getMonth() &&
+    date.getDate() === other.getDate();
+
+  if (!sameDay) return dateOnly;
+
+  const rawHours = date.getHours();
+  const ampm = rawHours >= 12 ? 'PM' : 'AM';
+  const hours = rawHours % 12 || 12;
   const minutes = pad(date.getMinutes());
   const seconds = pad(date.getSeconds());
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+
+  const sameMinute =
+    date.getHours() === other.getHours() &&
+    date.getMinutes() === other.getMinutes();
+  const showSeconds = sameMinute && date.getSeconds() !== other.getSeconds();
+
+  const timePart = showSeconds
+    ? `${hours}:${minutes}:${seconds} ${ampm}`
+    : `${hours}:${minutes} ${ampm}`;
+  return `${dateOnly} ${timePart}`;
 }
 
 // Run comparison folder scan
@@ -265,16 +290,32 @@ async function refreshScanSilent() {
 
 // Helper: check if file is binary
 function isBinaryFile(filename) {
-  const binaryExtensions = [
-    'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'ico', 'svg',
-    'zip', 'tar', 'gz', 'rar', '7z', 'bz2',
-    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-    'exe', 'dll', 'so', 'dylib', 'bin', 'class', 'jar', 'war',
-    'mp3', 'mp4', 'mkv', 'avi', 'mov', 'wav', 'flac',
-    'db', 'sqlite', 'mdb'
-  ];
+  const binaryExtensions = new Set([
+    // Images
+    'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'ico', 'tif', 'tiff', 'heic', 'raw', 'psd', 'ai',
+    // Archives
+    'zip', 'tar', 'gz', 'rar', '7z', 'bz2', 'xz', 'cab', 'iso', 'dmg', 'pkg',
+    // MS Office (all binary — not human-readable as text)
+    'doc', 'docx', 'docm', 'dot', 'dotx', 'dotm',
+    'xls', 'xlsx', 'xlsm', 'xlsb', 'xlt', 'xltx', 'xltm',
+    'ppt', 'pptx', 'pptm', 'pot', 'potx', 'potm', 'pps', 'ppsx',
+    'pub', 'accdb', 'accdt', 'mpp', 'vsd', 'vsdx',
+    // OpenDocument (binary zip containers)
+    'odt', 'ods', 'odp', 'odg', 'odf',
+    // PDF & ebook
+    'pdf', 'epub', 'mobi',
+    // Executables & compiled
+    'exe', 'dll', 'so', 'dylib', 'bin', 'class', 'jar', 'war', 'apk', 'ipa',
+    // Media
+    'mp3', 'mp4', 'mkv', 'avi', 'mov', 'wmv', 'flv', 'webm',
+    'wav', 'flac', 'aac', 'm4a', 'ogg',
+    // Databases
+    'db', 'sqlite', 'mdb', 'dbf',
+    // Fonts
+    'ttf', 'otf', 'woff', 'woff2', 'eot',
+  ]);
   const ext = filename.split('.').pop().toLowerCase();
-  return binaryExtensions.includes(ext);
+  return binaryExtensions.has(ext);
 }
 
 // Helper: request MD5 hash of a file
@@ -375,8 +416,8 @@ async function showDiffModal(file) {
     binaryLeftSize.textContent = file.left ? formatBytes(file.left.size) : 'Absent';
     binaryRightSize.textContent = file.right ? formatBytes(file.right.size) : 'Absent';
     
-    binaryLeftMtime.textContent = file.left ? formatDate(file.left.mtime) : 'Absent';
-    binaryRightMtime.textContent = file.right ? formatDate(file.right.mtime) : 'Absent';
+    binaryLeftMtime.textContent = file.left ? formatDate(file.left.mtime, file.right?.mtime) : 'Absent';
+    binaryRightMtime.textContent = file.right ? formatDate(file.right.mtime, file.left?.mtime) : 'Absent';
     
     binaryLeftHash.textContent = 'Calculating...';
     binaryRightHash.textContent = 'Calculating...';
@@ -472,23 +513,28 @@ async function showDiffModal(file) {
     }
   }
   
-  // Wire up keep version modal action buttons
-  // "Keep New" = keep the newer side; "Keep Old" = keep the older side
-  const keepNewAction = file.newerSide === 'right' ? 'keepRight' : 'keepLeft';
-  const keepOldAction = file.newerSide === 'right' ? 'keepLeft' : 'keepRight';
+  // Modal buttons: each button replaces THAT side's file with the other side's version.
+  // Newer side shows "Replace with Old"; older side shows "Replace with New".
+  const leftIsNewer = file.newerSide === 'left';
+  const rightIsNewer = file.newerSide === 'right';
+  const leftLabel = leftIsNewer ? 'Replace with Old' : rightIsNewer ? 'Replace with New' : 'Replace with Right';
+  const rightLabel = rightIsNewer ? 'Replace with Old' : leftIsNewer ? 'Replace with New' : 'Replace with Left';
 
-  diffModalKeepNew.onclick = () => {
-    performSyncAction(relativePath, keepNewAction);
+  diffModalKeepLeft.querySelector('span:last-child').textContent = ` ${leftLabel}`;
+  diffModalKeepRight.querySelector('span:last-child').textContent = ` ${rightLabel}`;
+
+  // Left button replaces left file with right version; right button replaces right file with left version.
+  diffModalKeepLeft.onclick = () => {
+    performSyncAction(relativePath, 'keepRight');
     diffModal.classList.add('hidden');
   };
-  diffModalKeepOld.onclick = () => {
-    performSyncAction(relativePath, keepOldAction);
+  diffModalKeepRight.onclick = () => {
+    performSyncAction(relativePath, 'keepLeft');
     diffModal.classList.add('hidden');
   };
 
-  // Enable/disable based on file existence; if no newerSide, "Keep New" maps to keepLeft
-  diffModalKeepNew.disabled = keepNewAction === 'keepLeft' ? !file.left : !file.right;
-  diffModalKeepOld.disabled = keepOldAction === 'keepLeft' ? !file.left : !file.right;
+  diffModalKeepLeft.disabled = !file.right;
+  diffModalKeepRight.disabled = !file.left;
 }
 
 // Simple HTML escaper
@@ -726,24 +772,24 @@ function renderGrid() {
         statusCell.innerHTML = getStatusCellHtml(file);
         row.appendChild(statusCell);
 
-        // 4. Left Action
-        const leftActionCell = document.createElement('div');
-        leftActionCell.className = 'grid-cell col-left-action';
-        leftActionCell.innerHTML = getLeftActionHtml(file);
-        row.appendChild(leftActionCell);
-
-        // 5. Left Date
+        // 4. Left Date
         const leftDateCell = document.createElement('div');
         leftDateCell.className = 'grid-cell col-left-date';
         if (file.left) {
-          leftDateCell.textContent = formatDate(file.left.mtime);
+          const leftCompareMtime = file.status === 'modified' ? file.right?.mtime : null;
+          const leftDateStr = formatDate(file.left.mtime, leftCompareMtime);
+          if (file.status === 'modified' && file.newerSide === 'left' && file.timeDiffStr) {
+            leftDateCell.innerHTML = `<span class="newer-indicator" title="Left is newer by ${file.timeDiffStr}">◄ ${file.timeDiffStr}</span><span class="date-text">${leftDateStr}</span>`;
+          } else {
+            leftDateCell.innerHTML = `<span class="date-text">${leftDateStr}</span>`;
+          }
           leftDateCell.title = file.left.mtime;
         } else {
           leftDateCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
         }
         row.appendChild(leftDateCell);
 
-        // 6. Left Size
+        // 5. Left Size
         const leftSizeCell = document.createElement('div');
         leftSizeCell.className = 'grid-cell col-left-size';
         if (file.left) {
@@ -753,24 +799,30 @@ function renderGrid() {
         }
         row.appendChild(leftSizeCell);
 
-        // 7. Right Action
-        const rightActionCell = document.createElement('div');
-        rightActionCell.className = 'grid-cell col-right-action';
-        rightActionCell.innerHTML = getRightActionHtml(file);
-        row.appendChild(rightActionCell);
+        // 6. Left Action
+        const leftActionCell = document.createElement('div');
+        leftActionCell.className = 'grid-cell col-left-action';
+        leftActionCell.innerHTML = getLeftActionHtml(file);
+        row.appendChild(leftActionCell);
 
-        // 8. Right Date
+        // 7. Right Date
         const rightDateCell = document.createElement('div');
         rightDateCell.className = 'grid-cell col-right-date';
         if (file.right) {
-          rightDateCell.textContent = formatDate(file.right.mtime);
+          const rightCompareMtime = file.status === 'modified' ? file.left?.mtime : null;
+          const rightDateStr = formatDate(file.right.mtime, rightCompareMtime);
+          if (file.status === 'modified' && file.newerSide === 'right' && file.timeDiffStr) {
+            rightDateCell.innerHTML = `<span class="newer-indicator right-side-newer" title="Right is newer by ${file.timeDiffStr}">► ${file.timeDiffStr}</span><span class="date-text">${rightDateStr}</span>`;
+          } else {
+            rightDateCell.innerHTML = `<span class="date-text">${rightDateStr}</span>`;
+          }
           rightDateCell.title = file.right.mtime;
         } else {
           rightDateCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
         }
         row.appendChild(rightDateCell);
 
-        // 9. Right Size
+        // 8. Right Size
         const rightSizeCell = document.createElement('div');
         rightSizeCell.className = 'grid-cell col-right-size';
         if (file.right) {
@@ -779,6 +831,12 @@ function renderGrid() {
           rightSizeCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
         }
         row.appendChild(rightSizeCell);
+
+        // 9. Right Action
+        const rightActionCell = document.createElement('div');
+        rightActionCell.className = 'grid-cell col-right-action';
+        rightActionCell.innerHTML = getRightActionHtml(file);
+        row.appendChild(rightActionCell);
 
         gridBody.appendChild(row);
       });
@@ -799,19 +857,7 @@ function getStatusCellHtml(file) {
   }
   
   if (file.status === 'modified') {
-    let newerBadgeHtml = '';
-    if (file.newerSide) {
-      const isLeft = file.newerSide === 'left';
-      newerBadgeHtml = `
-        <span class="newer-indicator ${isLeft ? '' : 'right-side-newer'}" title="${isLeft ? 'Left' : 'Right'} is newer by ${file.timeDiffStr}">
-          ${isLeft ? '◄' : '►'} ${file.timeDiffStr}
-        </span>
-      `;
-    }
-    return `
-      <span class="status-badge badge-modified">Modified</span>
-      ${newerBadgeHtml}
-    `;
+    return `<span class="status-badge badge-modified">Modified</span>`;
   }
   return '';
 }
@@ -822,17 +868,18 @@ function getLeftActionHtml(file) {
     return `<button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Copy to Right folder"><span class="material-symbols-outlined">arrow_forward</span></button>`;
   }
   if (file.status === 'modified') {
-    const newerSide = file.newerSide;
-    const isLeftNewer = newerSide === 'left' || !newerSide;
-    const action = isLeftNewer ? 'keepLeft' : 'keepLeft';
-    const label = isLeftNewer ? 'Keep New' : 'Keep Old';
-    const btnClass = isLeftNewer ? 'btn-keep-new' : 'btn-keep-old';
-    const title = newerSide === 'left'
-      ? `Keep Left (newer by ${file.timeDiffStr})`
-      : newerSide === 'right'
-        ? `Keep Left (older by ${file.timeDiffStr})`
-        : 'Keep Left version';
-    return `<button class="text-action-btn ${btnClass}" data-action="keepLeft" data-path="${file.relativePath}" title="${title}">${label}</button>`;
+    // Left column: button replaces THIS (left) file with the other side's version.
+    // Newer side shows "Replace with Old"; older side shows "Replace with New".
+    const isLeftNewer = file.newerSide === 'left';
+    const isRightNewer = file.newerSide === 'right';
+    const label = isLeftNewer ? 'Replace with Old' : isRightNewer ? 'Replace with New' : 'Replace with Right';
+    const btnClass = isLeftNewer ? 'btn-keep-old' : 'btn-keep-new';
+    const title = isLeftNewer
+      ? `Replace this (newer) Left with the older Right (${file.timeDiffStr})`
+      : isRightNewer
+        ? `Replace this (older) Left with the newer Right (${file.timeDiffStr})`
+        : 'Replace Left with Right';
+    return `<button class="text-action-btn ${btnClass}" data-action="keepRight" data-path="${file.relativePath}" title="${title}">${label}</button>`;
   }
   return '';
 }
@@ -843,16 +890,18 @@ function getRightActionHtml(file) {
     return `<button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Copy to Left folder"><span class="material-symbols-outlined">arrow_back</span></button>`;
   }
   if (file.status === 'modified') {
-    const newerSide = file.newerSide;
-    const isRightNewer = newerSide === 'right';
-    const label = isRightNewer ? 'Keep New' : 'Keep Old';
-    const btnClass = isRightNewer ? 'btn-keep-new' : 'btn-keep-old';
-    const title = newerSide === 'right'
-      ? `Keep Right (newer by ${file.timeDiffStr})`
-      : newerSide === 'left'
-        ? `Keep Right (older by ${file.timeDiffStr})`
-        : 'Keep Right version';
-    return `<button class="text-action-btn ${btnClass}" data-action="keepRight" data-path="${file.relativePath}" title="${title}">${label}</button>`;
+    // Right column: button replaces THIS (right) file with the other side's version.
+    // Newer side shows "Replace with Old"; older side shows "Replace with New".
+    const isRightNewer = file.newerSide === 'right';
+    const isLeftNewer = file.newerSide === 'left';
+    const label = isRightNewer ? 'Replace with Old' : isLeftNewer ? 'Replace with New' : 'Replace with Left';
+    const btnClass = isRightNewer ? 'btn-keep-old' : 'btn-keep-new';
+    const title = isRightNewer
+      ? `Replace this (newer) Right with the older Left (${file.timeDiffStr})`
+      : isLeftNewer
+        ? `Replace this (older) Right with the newer Left (${file.timeDiffStr})`
+        : 'Replace Right with Left';
+    return `<button class="text-action-btn ${btnClass}" data-action="keepLeft" data-path="${file.relativePath}" title="${title}">${label}</button>`;
   }
   return '';
 }
@@ -897,8 +946,29 @@ gridBody.addEventListener('click', (e) => {
 undoBtn.addEventListener('click', undoLastAction);
 closeUndoBannerBtn.addEventListener('click', hideUndoToast);
 
+// Maximize toggle
+const diffMaximizeBtn = document.getElementById('diff-maximize-btn');
+const diffMaximizeIcon = diffMaximizeBtn.querySelector('.material-symbols-outlined');
+diffMaximizeBtn.addEventListener('click', () => {
+  const isMax = diffModal.classList.toggle('maximized');
+  diffMaximizeIcon.textContent = isMax ? 'close_fullscreen' : 'open_in_full';
+  diffMaximizeBtn.title = isMax ? 'Restore' : 'Maximize';
+});
+
+// Diffs-only toggle
+const diffDiffsOnlyBtn = document.getElementById('diff-diffs-only-btn');
+diffDiffsOnlyBtn.addEventListener('click', () => {
+  const isActive = diffTextContainer.classList.toggle('diffs-only');
+  diffDiffsOnlyBtn.classList.toggle('active', isActive);
+});
+
 // Modal Closing controls
-const closeModal = () => diffModal.classList.add('hidden');
+const closeModal = () => {
+  diffModal.classList.add('hidden');
+  diffModal.classList.remove('maximized');
+  diffMaximizeIcon.textContent = 'open_in_full';
+  diffMaximizeBtn.title = 'Maximize';
+};
 closeDiffModalBtn.addEventListener('click', closeModal);
 closeDiffModalFooterBtn.addEventListener('click', closeModal);
 
@@ -928,6 +998,11 @@ diffRightCode.addEventListener('scroll', () => {
 
 // Load previously saved paths on start
 document.addEventListener('DOMContentLoaded', () => {
+  // Match window width to app width (works when opened as a popup; no-ops in normal tabs)
+  const appWidth = Math.round(1240 * 1.1);
+  const appHeight = window.outerHeight || 900;
+  try { window.resizeTo(appWidth, appHeight); } catch (e) { /* sandboxed */ }
+
   const cachedLeft = localStorage.getItem('comparer_left_path');
   const cachedRight = localStorage.getItem('comparer_right_path');
   
@@ -942,17 +1017,17 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // Per-column min/max constraints (px). Filename max keeps fixed cols always visible.
-// Fixed cols total = 785px; app content = 1408px; filename max = 1408 - 785 = 623px.
+// Fixed cols total = 841px; app content = 1240px; filename max = 1240 - 841 = 399px.
 const COL_CONSTRAINTS = {
-  filename:      { min: 160, max: 623 },
-  type:          { min: 40,  max: 100 },
-  status:        { min: 80,  max: 180 },
-  'left-action':  { min: 60,  max: 140 },
-  'left-date':    { min: 100, max: 200 },
-  'left-size':    { min: 55,  max: 130 },
-  'right-action': { min: 60,  max: 140 },
-  'right-date':   { min: 100, max: 200 },
-  'right-size':   { min: 55,  max: 130 },
+  filename:       { min: 160, max: 560 },
+  type:           { min: 40,  max: 100 },
+  status:         { min: 80,  max: 180 },
+  'left-date':    { min: 100, max: 180 },
+  'left-size':    { min: 50,  max: 110 },
+  'left-action':  { min: 90,  max: 160 },
+  'right-date':   { min: 100, max: 180 },
+  'right-size':   { min: 50,  max: 110 },
+  'right-action': { min: 90,  max: 160 },
 };
 
 // Resizable Columns Logic
