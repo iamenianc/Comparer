@@ -43,6 +43,18 @@
           </div>
         </div>
 
+        <div class="header-tools">
+          <button id="open-exclusions-btn" class="header-tool-btn" title="Exclusions (ignored globs)">
+            <span class="material-symbols-outlined">filter_alt_off</span>
+            <span>Exclusions</span>
+            <span class="header-tool-count" id="exclusions-count">0</span>
+          </button>
+          <button id="open-sessions-btn" class="header-tool-btn" title="Saved comparison sessions">
+            <span class="material-symbols-outlined">bookmarks</span>
+            <span>Sessions</span>
+          </button>
+        </div>
+
         <span class="version-badge">v1.0.0</span>
       </div>
 
@@ -251,6 +263,62 @@
         <button id="close-diff-modal-footer-btn" class="secondary-btn">Close</button>
       </footer>
     </div>
+  </div>
+
+  <!-- Exclusions Side Panel -->
+  <div id="exclusions-overlay" class="side-panel-overlay hidden">
+    <aside class="side-panel" id="exclusions-panel">
+      <header class="side-panel-header">
+        <div class="side-panel-title-group">
+          <span class="material-symbols-outlined side-panel-icon">filter_alt_off</span>
+          <div>
+            <h3>Exclusions</h3>
+            <span class="side-panel-subtitle">Glob patterns skipped during scans</span>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="close-exclusions-btn">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </header>
+      <div class="side-panel-body">
+        <form id="add-exclusion-form" class="side-panel-add-row">
+          <div class="input-wrapper side-panel-input">
+            <span class="material-symbols-outlined input-icon">add</span>
+            <input type="text" id="exclusion-input" placeholder="e.g. **/build or *.log" autocomplete="off">
+          </div>
+          <button type="submit" class="primary-btn">Add</button>
+        </form>
+        <ul class="side-panel-list" id="exclusions-list"></ul>
+      </div>
+      <footer class="side-panel-footer">
+        <button class="secondary-btn" id="reset-exclusions-btn">Reset to defaults</button>
+      </footer>
+    </aside>
+  </div>
+
+  <!-- Sessions Side Panel -->
+  <div id="sessions-overlay" class="side-panel-overlay hidden">
+    <aside class="side-panel" id="sessions-panel">
+      <header class="side-panel-header">
+        <div class="side-panel-title-group">
+          <span class="material-symbols-outlined side-panel-icon">bookmarks</span>
+          <div>
+            <h3>Sessions</h3>
+            <span class="side-panel-subtitle">Saved comparison setups</span>
+          </div>
+        </div>
+        <button class="close-modal-btn" id="close-sessions-btn">
+          <span class="material-symbols-outlined">close</span>
+        </button>
+      </header>
+      <div class="side-panel-body">
+        <button class="primary-btn side-panel-save-btn" id="save-session-btn">
+          <span class="material-symbols-outlined">save</span>
+          <span>Save current setup</span>
+        </button>
+        <ul class="side-panel-list" id="sessions-list"></ul>
+      </div>
+    </aside>
   </div>
 
   <script src="app.js"></script>

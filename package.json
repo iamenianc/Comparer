@@ -5,6 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "build:bundle": "esbuild server.js --bundle --platform=node --format=cjs --target=node20 --external:fsevents --outfile=dist/bundle.cjs",
+    "build:blob": "node --experimental-sea-config sea-config.json",
+    "build": "node scripts/build.mjs",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -24,5 +27,12 @@
     "diff": "^9.0.0",
     "express": "^5.2.1",
     "mime-types": "^3.0.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "postject": "^1.0.0-alpha.6"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }

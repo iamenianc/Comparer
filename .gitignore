@@ -1,5 +1,9 @@
 node_modules/
+# Keep the test-fixture node_modules so the exclusion test is reproducible
+!tests/mock_left/node_modules/
+!tests/mock_right/node_modules/
 .comparer-backups/
+dist/
 .DS_Store
 npm-debug.log*
 yarn-debug.log*

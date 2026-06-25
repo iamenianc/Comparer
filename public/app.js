@@ -7,6 +7,28 @@ const collapsedFolders = new Set();
 let lastScanParams = null;
 let eventSource = null;
 
+// --- Exclusions (ignored globs) state ---
+const DEFAULT_IGNORE_GLOBS = ['**/.git', '**/node_modules', '**/Thumbs.db', '**/.DS_Store', '**/dist'];
+const IGNORE_STORAGE_KEY = 'comparer_ignore_globs';
+const SESSIONS_STORAGE_KEY = 'comparer_sessions';
+
+let ignoreGlobs = loadIgnoreGlobs();
+
+function loadIgnoreGlobs() {
+  try {
+    const raw = localStorage.getItem(IGNORE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) { /* fall through to defaults */ }
+  return [...DEFAULT_IGNORE_GLOBS];
+}
+
+function saveIgnoreGlobs() {
+  localStorage.setItem(IGNORE_STORAGE_KEY, JSON.stringify(ignoreGlobs));
+}
+
 // DOM elements
 const leftPathInput = document.getElementById('left-path');
 const rightPathInput = document.getElementById('right-path');
@@ -118,7 +140,8 @@ async function runScan() {
   lastScanParams = {
     leftPath,
     rightPath,
-    recursive: recursiveCheckbox.checked
+    recursive: recursiveCheckbox.checked,
+    ignore: ignoreGlobs
   };
 
   // Set scanning UI state
@@ -1069,3 +1092,222 @@ function initResizableColumns() {
     });
   });
 }
+
+// ===========================================================================
+// Phase 3: Exclusions (ignored globs) panel
+// ===========================================================================
+const exclusionsOverlay = document.getElementById('exclusions-overlay');
+const exclusionsListEl = document.getElementById('exclusions-list');
+const exclusionInput = document.getElementById('exclusion-input');
+const addExclusionForm = document.getElementById('add-exclusion-form');
+const exclusionsCount = document.getElementById('exclusions-count');
+
+function renderExclusions() {
+  exclusionsCount.textContent = ignoreGlobs.length;
+  exclusionsListEl.innerHTML = '';
+  ignoreGlobs.forEach((glob, idx) => {
+    const li = document.createElement('li');
+    li.className = 'side-panel-item';
+    li.innerHTML = `
+      <div class="side-panel-item-main">
+        <div class="side-panel-item-glob"></div>
+      </div>
+      <div class="side-panel-item-actions">
+        <button class="side-panel-mini-btn danger" title="Remove pattern">
+          <span class="material-symbols-outlined">delete</span>
+        </button>
+      </div>
+    `;
+    li.querySelector('.side-panel-item-glob').textContent = glob;
+    li.querySelector('.side-panel-mini-btn').addEventListener('click', () => {
+      ignoreGlobs.splice(idx, 1);
+      saveIgnoreGlobs();
+      renderExclusions();
+      triggerRescanForIgnoreChange();
+    });
+    exclusionsListEl.appendChild(li);
+  });
+}
+
+// Re-scan when the ignore list changes — but only if a scan is already active.
+function triggerRescanForIgnoreChange() {
+  if (!lastScanParams) return;
+  lastScanParams.ignore = ignoreGlobs;
+  refreshScanSilent();
+}
+
+addExclusionForm.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const value = exclusionInput.value.trim();
+  if (!value) return;
+  if (ignoreGlobs.includes(value)) {
+    exclusionInput.value = '';
+    return;
+  }
+  ignoreGlobs.push(value);
+  saveIgnoreGlobs();
+  exclusionInput.value = '';
+  renderExclusions();
+  triggerRescanForIgnoreChange();
+});
+
+document.getElementById('reset-exclusions-btn').addEventListener('click', () => {
+  ignoreGlobs = [...DEFAULT_IGNORE_GLOBS];
+  saveIgnoreGlobs();
+  renderExclusions();
+  triggerRescanForIgnoreChange();
+});
+
+document.getElementById('open-exclusions-btn').addEventListener('click', () => {
+  renderExclusions();
+  exclusionsOverlay.classList.remove('hidden');
+});
+document.getElementById('close-exclusions-btn').addEventListener('click', () => {
+  exclusionsOverlay.classList.add('hidden');
+});
+exclusionsOverlay.addEventListener('click', (e) => {
+  if (e.target === exclusionsOverlay) exclusionsOverlay.classList.add('hidden');
+});
+
+// ===========================================================================
+// Phase 3: Session management panel
+// ===========================================================================
+const sessionsOverlay = document.getElementById('sessions-overlay');
+const sessionsListEl = document.getElementById('sessions-list');
+
+function loadSessions() {
+  try {
+    const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch (e) { /* fall through */ }
+  return [];
+}
+
+function saveSessions(sessions) {
+  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+}
+
+function renderSessions() {
+  const sessions = loadSessions();
+  sessionsListEl.innerHTML = '';
+  sessions.forEach((session) => {
+    const li = document.createElement('li');
+    li.className = 'side-panel-item';
+    li.innerHTML = `
+      <div class="side-panel-item-main">
+        <div class="side-panel-item-title"></div>
+        <div class="side-panel-item-meta"></div>
+      </div>
+      <div class="side-panel-item-actions">
+        <button class="side-panel-mini-btn btn-reload" title="Reload this session">
+          <span class="material-symbols-outlined">restart_alt</span>Reload
+        </button>
+        <button class="side-panel-mini-btn danger btn-delete" title="Delete session">
+          <span class="material-symbols-outlined">delete</span>
+        </button>
+      </div>
+    `;
+    li.querySelector('.side-panel-item-title').textContent = session.name;
+    const date = session.savedAt ? new Date(session.savedAt).toLocaleString() : '';
+    li.querySelector('.side-panel-item-meta').textContent =
+      `${(session.leftPath || '').split(/[\\/]/).pop()} ↔ ${(session.rightPath || '').split(/[\\/]/).pop()} · ${date}`;
+    li.querySelector('.side-panel-item-meta').title = `${session.leftPath}\n${session.rightPath}`;
+
+    li.querySelector('.btn-reload').addEventListener('click', () => reloadSession(session));
+    li.querySelector('.btn-delete').addEventListener('click', () => {
+      if (!confirm(`Delete session "${session.name}"?`)) return;
+      const remaining = loadSessions().filter((s) => s.name !== session.name);
+      saveSessions(remaining);
+      renderSessions();
+    });
+    sessionsListEl.appendChild(li);
+  });
+}
+
+function saveCurrentSession() {
+  const leftPath = leftPathInput.value.trim();
+  const rightPath = rightPathInput.value.trim();
+  if (!leftPath || !rightPath) {
+    alert('Enter both folder paths before saving a session.');
+    return;
+  }
+  let name = prompt('Name this session:');
+  if (name === null) return;
+  name = name.trim();
+  if (!name) {
+    alert('Session name cannot be empty.');
+    return;
+  }
+
+  const sessions = loadSessions();
+  const existingIdx = sessions.findIndex((s) => s.name === name);
+  if (existingIdx !== -1 && !confirm(`A session named "${name}" already exists. Overwrite it?`)) {
+    return;
+  }
+
+  const session = {
+    name,
+    leftPath,
+    rightPath,
+    recursive: recursiveCheckbox.checked,
+    ignore: [...ignoreGlobs],
+    activeFilter: currentFilter,
+    savedAt: new Date().toISOString(),
+  };
+
+  if (existingIdx !== -1) {
+    sessions[existingIdx] = session;
+  } else {
+    sessions.push(session);
+  }
+  saveSessions(sessions);
+  renderSessions();
+}
+
+function reloadSession(session) {
+  leftPathInput.value = session.leftPath || '';
+  rightPathInput.value = session.rightPath || '';
+  recursiveCheckbox.checked = !!session.recursive;
+
+  // Restore the ignore list
+  ignoreGlobs = Array.isArray(session.ignore) ? [...session.ignore] : [...DEFAULT_IGNORE_GLOBS];
+  saveIgnoreGlobs();
+  renderExclusions();
+
+  // Restore the active filter tab
+  if (session.activeFilter) {
+    currentFilter = session.activeFilter;
+    filterTabs.forEach((t) => {
+      t.classList.toggle('active', t.getAttribute('data-filter') === currentFilter);
+    });
+  }
+
+  sessionsOverlay.classList.add('hidden');
+  runScan();
+}
+
+document.getElementById('save-session-btn').addEventListener('click', saveCurrentSession);
+document.getElementById('open-sessions-btn').addEventListener('click', () => {
+  renderSessions();
+  sessionsOverlay.classList.remove('hidden');
+});
+document.getElementById('close-sessions-btn').addEventListener('click', () => {
+  sessionsOverlay.classList.add('hidden');
+});
+sessionsOverlay.addEventListener('click', (e) => {
+  if (e.target === sessionsOverlay) sessionsOverlay.classList.add('hidden');
+});
+
+// Close any open side panel on Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    exclusionsOverlay.classList.add('hidden');
+    sessionsOverlay.classList.add('hidden');
+  }
+});
+
+// Initialize the exclusions count badge on load
+renderExclusions();

@@ -6,14 +6,74 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import chokidar from 'chokidar';
 import * as diff from 'diff';
+import { exec } from 'child_process';
 
 
-const __filename = fileURLToPath(import.meta.url);
+// Detect a packaged build (Node SEA or pkg). In a SEA the `node:sea` module's
+// isSea() returns true; pkg sets process.pkg.
+let isSea = false;
+try { isSea = !!(globalThis.require?.('node:sea')?.isSea?.()); } catch (e) { /* not SEA */ }
+const isPackaged = !!process.pkg || isSea;
+
+// `import.meta.url` is empty when this file is bundled to CJS for SEA, so guard
+// the conversion. When packaged, assets ship alongside the executable rather
+// than next to this source file — resolve `public/` against the binary dir.
+const __filename = import.meta.url ? fileURLToPath(import.meta.url) : process.execPath;
 const __dirname = path.dirname(__filename);
-const publicPath = path.join(__dirname, 'public');
+const assetRoot = isPackaged ? path.dirname(process.execPath) : __dirname;
+const publicPath = path.join(assetRoot, 'public');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ---------------------------------------------------------------------------
+// Glob ignore filtering (single source of truth for both scan and watch)
+// ---------------------------------------------------------------------------
+
+// Default patterns applied on every scan, merged with any user-supplied list.
+const DEFAULT_IGNORES = ['**/.git', '**/node_modules', '**/Thumbs.db', '**/.DS_Store', '**/dist'];
+
+// Convert a small glob subset (`*`, `**`, `?`, literal segments) into an
+// anchored RegExp. Paths are normalized to forward slashes before matching so
+// Windows `\` separators compare correctly. A pattern matches the entry itself
+// and any descendant (so `**/node_modules` also ignores everything beneath it).
+function globToRegExp(pattern) {
+  const normalized = pattern.replace(/\\/g, '/').replace(/\/+$/, '');
+  let re = '';
+  for (let i = 0; i < normalized.length; i++) {
+    const c = normalized[i];
+    if (c === '*') {
+      if (normalized[i + 1] === '*') {
+        // `**` matches across path separators (zero or more segments)
+        re += '.*';
+        i++;
+        // swallow a following slash so `**/foo` also matches a root `foo`
+        if (normalized[i + 1] === '/') i++;
+      } else {
+        // single `*` matches within one path segment
+        re += '[^/]*';
+      }
+    } else if (c === '?') {
+      re += '[^/]';
+    } else if ('.+^${}()|[]\\'.includes(c)) {
+      re += '\\' + c;
+    } else {
+      re += c;
+    }
+  }
+  // Anchor: match the whole path, or the path followed by `/...` (descendants).
+  return new RegExp(`^(?:${re})(?:/.*)?$`);
+}
+
+function compileGlobs(patterns) {
+  return (patterns || []).filter(Boolean).map(globToRegExp);
+}
+
+// Test a forward-slash relative path against compiled patterns.
+function isIgnored(relativePath, compiledPatterns) {
+  const rel = relativePath.replace(/\\/g, '/');
+  return compiledPatterns.some((re) => re.test(rel));
+}
 
 // Backup and Watcher global state
 let lastTransaction = null;
@@ -46,8 +106,9 @@ process.on('SIGTERM', () => {
   process.exit(0);
 });
 
-// Helper to manage watchers
-function setupWatchers(leftPath, rightPath) {
+// Helper to manage watchers. `ignorePatterns` is the merged (default + user)
+// glob list — the same list fed to the scan, so live events and scans never drift.
+function setupWatchers(leftPath, rightPath, ignorePatterns = DEFAULT_IGNORES) {
   // Clear previous watchers
   for (const watcher of activeWatchers) {
     try {
@@ -58,18 +119,26 @@ function setupWatchers(leftPath, rightPath) {
   }
   activeWatchers = [];
 
-  const watcherOptions = {
-    ignored: [
-      /(^|[\/\\])\../, // ignore dotfiles (e.g. .git, .DS_Store)
-      '**/node_modules/**',
-      '**/.git/**'
-    ],
-    persistent: true,
-    ignoreInitial: true,
+  const compiled = compileGlobs(ignorePatterns);
+
+  // chokidar passes absolute paths; convert to a base-relative path before
+  // testing against the same isIgnored() the scan uses.
+  const makeIgnoreFn = (baseDir) => (testPath) => {
+    const rel = path.relative(baseDir, testPath).replace(/\\/g, '/');
+    if (!rel || rel.startsWith('..')) return false; // never ignore the root itself
+    return isIgnored(rel, compiled);
   };
 
-  const leftWatcher = chokidar.watch(leftPath, watcherOptions);
-  const rightWatcher = chokidar.watch(rightPath, watcherOptions);
+  const leftWatcher = chokidar.watch(leftPath, {
+    ignored: makeIgnoreFn(leftPath),
+    persistent: true,
+    ignoreInitial: true,
+  });
+  const rightWatcher = chokidar.watch(rightPath, {
+    ignored: makeIgnoreFn(rightPath),
+    persistent: true,
+    ignoreInitial: true,
+  });
 
   const handleEvent = (event, filePath, side) => {
     // Calculate relative path for matching on client side
@@ -94,6 +163,19 @@ function setupWatchers(leftPath, rightPath) {
 app.use(express.json());
 app.use(express.static(publicPath));
 
+// Helper: Safely join a user-supplied relativePath onto a resolved base dir,
+// rejecting any `..` traversal that would escape the base. Returns the absolute
+// path, or null if the result falls outside `baseDir`.
+function safeJoin(baseDir, relativePath) {
+  const resolvedBase = path.resolve(baseDir);
+  const target = path.resolve(resolvedBase, relativePath);
+  const rel = path.relative(resolvedBase, target);
+  if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) {
+    return target;
+  }
+  return null;
+}
+
 // Helper: Format millisecond difference to a concise Google-style tag (e.g. +2h, +3d, +5s)
 function formatDuration(ms) {
   const secs = Math.floor(ms / 1000);
@@ -117,23 +199,30 @@ function getFileHash(filePath) {
   }
 }
 
-// Helper: Recursively scan a folder and gather file details
-function scanDirectory(dirPath, recursive = true, baseDir = dirPath) {
+// Helper: Recursively scan a folder and gather file details.
+// `compiledIgnores` is a list of compiled glob RegExps; entries (and their
+// subtrees) matching any of them are skipped before any stat / MD5 work,
+// which is the main performance win for large trees like node_modules.
+function scanDirectory(dirPath, recursive = true, baseDir = dirPath, compiledIgnores = []) {
   let results = {};
   if (!fs.existsSync(dirPath)) return results;
-  
+
   const stats = fs.statSync(dirPath);
   if (!stats.isDirectory()) return results;
 
   const files = fs.readdirSync(dirPath);
   for (const file of files) {
     const fullPath = path.join(dirPath, file);
-    const fileStats = fs.statSync(fullPath);
     const relativePath = path.relative(baseDir, fullPath).replace(/\\/g, '/');
+
+    // Skip ignored entries (and their subtrees) before stat-ing or recursing.
+    if (isIgnored(relativePath, compiledIgnores)) continue;
+
+    const fileStats = fs.statSync(fullPath);
 
     if (fileStats.isDirectory()) {
       if (recursive) {
-        const subFiles = scanDirectory(fullPath, recursive, baseDir);
+        const subFiles = scanDirectory(fullPath, recursive, baseDir, compiledIgnores);
         results = { ...results, ...subFiles };
       } else {
         // Track empty folders or folders in non-recursive mode
@@ -162,7 +251,11 @@ function scanDirectory(dirPath, recursive = true, baseDir = dirPath) {
 
 // API Route: Scan and compare left and right folders
 app.post('/api/scan', (req, res) => {
-  const { leftPath, rightPath, recursive = true } = req.body;
+  const { leftPath, rightPath, recursive = true, ignore = [] } = req.body;
+
+  // Merge user globs with server defaults; dedupe to keep the compiled list lean.
+  const mergedIgnores = [...new Set([...DEFAULT_IGNORES, ...(Array.isArray(ignore) ? ignore : [])])];
+  const compiledIgnores = compileGlobs(mergedIgnores);
 
   if (!leftPath || !rightPath) {
     return res.status(400).json({ error: 'Both leftPath and rightPath are required.' });
@@ -179,8 +272,8 @@ app.post('/api/scan', (req, res) => {
   }
 
   try {
-    const leftFiles = scanDirectory(resolvedLeft, recursive);
-    const rightFiles = scanDirectory(resolvedRight, recursive);
+    const leftFiles = scanDirectory(resolvedLeft, recursive, resolvedLeft, compiledIgnores);
+    const rightFiles = scanDirectory(resolvedRight, recursive, resolvedRight, compiledIgnores);
 
     const allPaths = new Set([...Object.keys(leftFiles), ...Object.keys(rightFiles)]);
     const compared = [];
@@ -268,8 +361,8 @@ app.post('/api/scan', (req, res) => {
       }
     }
 
-    // Set up file watchers
-    setupWatchers(resolvedLeft, resolvedRight);
+    // Set up file watchers with the same merged ignore list (no scan/watch drift)
+    setupWatchers(resolvedLeft, resolvedRight, mergedIgnores);
 
     res.json({
       leftPath: resolvedLeft,
@@ -305,8 +398,11 @@ app.post('/api/diff', (req, res) => {
   if (!leftPath || !rightPath || !relativePath) {
     return res.status(400).json({ error: 'leftPath, rightPath and relativePath are required.' });
   }
-  const fullLeft = path.resolve(path.join(leftPath, relativePath));
-  const fullRight = path.resolve(path.join(rightPath, relativePath));
+  const fullLeft = safeJoin(leftPath, relativePath);
+  const fullRight = safeJoin(rightPath, relativePath);
+  if (!fullLeft || !fullRight) {
+    return res.status(400).json({ error: 'Invalid relativePath: path traversal is not allowed.' });
+  }
 
   let leftText = '';
   let rightText = '';
@@ -396,8 +492,11 @@ app.post('/api/sync', (req, res) => {
 
   const resolvedLeft = path.resolve(leftPath);
   const resolvedRight = path.resolve(rightPath);
-  const fileLeft = path.join(resolvedLeft, relativePath);
-  const fileRight = path.join(resolvedRight, relativePath);
+  const fileLeft = safeJoin(resolvedLeft, relativePath);
+  const fileRight = safeJoin(resolvedRight, relativePath);
+  if (!fileLeft || !fileRight) {
+    return res.status(400).json({ error: 'Invalid relativePath: path traversal is not allowed.' });
+  }
 
   try {
     fs.mkdirSync(BACKUP_DIR, { recursive: true });
@@ -523,5 +622,19 @@ app.get('/api/watch', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Comparer Server running locally at http://localhost:${PORT}`);
+  const url = `http://localhost:${PORT}`;
+  console.log(`Comparer Server running locally at ${url}`);
+
+  // Auto-open the default browser so non-technical staff can just double-click
+  // the packaged exe. Suppress with COMPARER_NO_OPEN=1 for dev runs. The empty
+  // "" title arg keeps Windows `start` from mis-parsing the URL as a window title.
+  if (!process.env.COMPARER_NO_OPEN) {
+    const opener =
+      process.platform === 'win32' ? `start "" "${url}"`
+      : process.platform === 'darwin' ? `open "${url}"`
+      : `xdg-open "${url}"`;
+    exec(opener, (err) => {
+      if (err) console.warn('Could not auto-open browser:', err.message);
+    });
+  }
 });
