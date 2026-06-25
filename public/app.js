@@ -40,7 +40,7 @@ const filterTabs = document.querySelectorAll('.filter-tab');
 const gridBody = document.getElementById('comparison-grid-body');
 const countAll = document.getElementById('count-all');
 const countDiff = document.getElementById('count-diff');
-const countMatch = document.getElementById('count-match');
+const countModified = document.getElementById('count-modified');
 const countLeft = document.getElementById('count-left');
 const countRight = document.getElementById('count-right');
 const statusText = document.getElementById('status-text');
@@ -244,20 +244,30 @@ function condensePaths(left, right) {
   };
 }
 
+// Condense a single path into the same `drive\...\last\segments` style used by
+// condensePaths(), keeping the drive and the deepest `tailSegments` folders.
+function condenseSinglePath(fullPath, tailSegments = 2) {
+  const normalized = fullPath.replace(/\//g, '\\');
+  const parts = normalized.split('\\').filter(Boolean);
+  if (parts.length <= tailSegments + 1) return normalized;
+  const drive = parts[0];
+  const tail = parts.slice(parts.length - tailSegments).join('\\');
+  return `${drive}\\...\\${tail}`;
+}
+
 // Update the grid super-headers with condensed paths
 function updateHeaders() {
   if (!scanResult) return;
-  const condensed = condensePaths(scanResult.leftPath, scanResult.rightPath);
-  
+
   const leftSuper = document.getElementById('super-header-left');
   const rightSuper = document.getElementById('super-header-right');
-  
+
   if (leftSuper) {
-    leftSuper.querySelector('span').textContent = condensed.left;
+    leftSuper.querySelector('span').textContent = condenseSinglePath(scanResult.leftPath, 1);
     leftSuper.title = scanResult.leftPath;
   }
   if (rightSuper) {
-    rightSuper.querySelector('span').textContent = condensed.right;
+    rightSuper.querySelector('span').textContent = condenseSinglePath(scanResult.rightPath, 1);
     rightSuper.title = scanResult.rightPath;
   }
 }
@@ -841,13 +851,14 @@ function updateTabCounts() {
   const files = scanResult.files;
   const all = files.length;
   const diff = files.filter(f => f.status === 'modified' || f.status === 'left-only' || f.status === 'right-only').length;
+  const modified = files.filter(f => f.status === 'modified').length;
   const match = files.filter(f => f.status === 'identical').length;
   const left = files.filter(f => f.status === 'left-only').length;
   const right = files.filter(f => f.status === 'right-only').length;
 
   countAll.textContent = all;
   countDiff.textContent = diff;
-  countMatch.textContent = match;
+  countModified.textContent = modified;
   countLeft.textContent = left;
   countRight.textContent = right;
 
@@ -885,8 +896,8 @@ function renderGrid() {
   // 2. Filter by Active Tab
   if (currentFilter === 'diff') {
     filteredFiles = filteredFiles.filter(f => f.status === 'modified' || f.status === 'left-only' || f.status === 'right-only');
-  } else if (currentFilter === 'match') {
-    filteredFiles = filteredFiles.filter(f => f.status === 'identical');
+  } else if (currentFilter === 'modified') {
+    filteredFiles = filteredFiles.filter(f => f.status === 'modified');
   } else if (currentFilter === 'left') {
     filteredFiles = filteredFiles.filter(f => f.status === 'left-only');
   } else if (currentFilter === 'right') {
@@ -942,7 +953,7 @@ function renderGrid() {
         
         // Calculate indentation
         const depth = folderPath.split('/').length - 1;
-        const indentHtml = `<span class="file-indent" style="width: ${depth * 16}px"></span>`;
+        const indentHtml = `<span class="file-indent" style="width: ${depth * 10}px"></span>`;
         
         folderRow.innerHTML = `
           <div class="folder-cell">
@@ -973,9 +984,9 @@ function renderGrid() {
         const newerClass = file.status === 'modified' && file.newerSide ? ` newer-${file.newerSide}` : '';
         row.className = `grid-row status-${file.status}${newerClass}`;
 
-        // Indent subfolder files
+        // Indent subfolder files one level past their (flattened) folder row.
         const depth = folderPath === '' ? 0 : folderPath.split('/').length;
-        const indentHtml = `<span class="file-indent" style="width: ${depth * 16}px"></span>`;
+        const indentHtml = `<span class="file-indent" style="width: ${depth * 10}px"></span>`;
 
         // 1. Filename Cell
         const filenameCell = document.createElement('div');
@@ -1094,9 +1105,14 @@ function renderGrid() {
             ? file.relativePath.slice(0, file.relativePath.lastIndexOf('/'))
             : '';
           const folderPathText = dir ? `${rootPath}/${dir}` : rootPath;
+          // Anchor the display at the scan root (e.g. ...\leftRoot) and keep the
+          // file's relative subfolder in full, so it's clear which side's folder
+          // the file is missing from.
+          const condensedRoot = condenseSinglePath(rootPath, 1);
+          const displayText = dir ? `${condensedRoot}\\${dir.replace(/\//g, '\\')}` : condensedRoot;
           const overlay = document.createElement('div');
           overlay.className = `missing-side-overlay missing-${missingSide}`;
-          overlay.textContent = folderPathText;
+          overlay.textContent = displayText;
           overlay.title = `File missing in ${folderPathText}`;
           const anchorCell = missingSide === 'left' ? leftDateCell : rightDateCell;
           anchorCell.appendChild(overlay);

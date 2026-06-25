@@ -357,9 +357,13 @@ body {
   background-color: var(--google-blue);
   color: #fff;
 }
-.filter-tab[data-filter="match"] .tab-count {
-  background-color: var(--bg-identical);
-  color: var(--color-identical);
+.filter-tab[data-filter="modified"] .tab-count {
+  background-color: var(--bg-modified);
+  color: var(--color-modified);
+}
+.filter-tab[data-filter="modified"].active .tab-count {
+  background-color: var(--color-modified);
+  color: #fff;
 }
 .filter-tab[data-filter="left"] .tab-count {
   background-color: var(--bg-left-only);
@@ -878,13 +882,6 @@ body {
 .col-left-date,
 .col-right-date {
   position: relative;
-}
-/* Right-side path grows leftward from the right action column so it stays
-   inside the row rather than overflowing past the last column. */
-.missing-side-overlay.missing-right {
-  left: auto;
-  right: 0;
-  justify-content: flex-end;
 }
 /* Hide the "-" placeholders on the side the overlay covers. */
 .grid-row.status-left-only .col-right-date .ghost-placeholder,
