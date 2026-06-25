@@ -187,20 +187,22 @@ function condensePaths(left, right) {
   };
 }
 
-// Update the grid headers with condensed paths
+// Update the grid super-headers with condensed paths
 function updateHeaders() {
   if (!scanResult) return;
+  const condensed = condensePaths(scanResult.leftPath, scanResult.rightPath);
   
-  // Set title tooltip on all left and right headers using nth-child
-  const leftHeaders = document.querySelectorAll('.header-col:nth-child(-n+4)');
-  const rightHeaders = document.querySelectorAll('.header-col:nth-child(n+6)');
+  const leftSuper = document.getElementById('super-header-left');
+  const rightSuper = document.getElementById('super-header-right');
   
-  leftHeaders.forEach(col => {
-    col.title = `Left Folder: ${scanResult.leftPath}`;
-  });
-  rightHeaders.forEach(col => {
-    col.title = `Right Folder: ${scanResult.rightPath}`;
-  });
+  if (leftSuper) {
+    leftSuper.querySelector('span').textContent = condensed.left;
+    leftSuper.title = scanResult.leftPath;
+  }
+  if (rightSuper) {
+    rightSuper.querySelector('span').textContent = condensed.right;
+    rightSuper.title = scanResult.rightPath;
+  }
 }
 
 // Setup EventSource for SSE watcher connection
@@ -238,10 +240,14 @@ async function refreshScanSilent() {
       updateTabCounts();
       updateHeaders();
 
-      const scrollParent = document.querySelector('.grid-body-wrapper');
-      const scrollTop = scrollParent.scrollTop;
+      const scrollParent = document.querySelector('.grid-scroll-container');
+      const scrollTop = scrollParent ? scrollParent.scrollTop : 0;
+      const scrollLeft = scrollParent ? scrollParent.scrollLeft : 0;
       renderGrid();
-      scrollParent.scrollTop = scrollTop;
+      if (scrollParent) {
+        scrollParent.scrollTop = scrollTop;
+        scrollParent.scrollLeft = scrollLeft;
+      }
     }
   } catch (error) {
     console.error('Silent refresh failed:', error);
@@ -479,6 +485,15 @@ function escapeHtml(text) {
     .replace(/'/g, '&#039;');
 }
 
+// Helper: Extract file type/extension
+function getFileType(filename) {
+  const parts = filename.split('.');
+  if (parts.length > 1) {
+    return '.' + parts.pop().toLowerCase();
+  }
+  return '';
+}
+
 // Update filter counts badge numbers
 function updateTabCounts() {
   if (!scanResult) return;
@@ -621,11 +636,12 @@ function renderGrid() {
         const depth = folderPath === '' ? 0 : folderPath.split('/').length;
         const indentHtml = `<span class="file-indent" style="width: ${depth * 16}px"></span>`;
 
-        // 1. Render Left Path Cell
-        const pathCell = document.createElement('div');
-        pathCell.className = 'grid-cell col-path';
-        if (file.left) {
-          pathCell.innerHTML = `
+        // 1. Filename Cell
+        const filenameCell = document.createElement('div');
+        filenameCell.className = 'grid-cell col-filename';
+        const displayFile = file.left || file.right;
+        if (displayFile) {
+          filenameCell.innerHTML = `
             <div class="file-cell">
               ${indentHtml}
               <span class="material-symbols-outlined file-icon">description</span>
@@ -633,29 +649,37 @@ function renderGrid() {
             </div>
           `;
         } else {
-          pathCell.innerHTML = `
+          filenameCell.innerHTML = `
             <div class="file-cell ghost-placeholder">
               ${indentHtml}
               <span class="material-symbols-outlined file-icon">description</span>
-              <span class="file-name" title="${file.relativePath}">(Absent)</span>
+              <span class="file-name">(Unknown)</span>
             </div>
           `;
         }
-        row.appendChild(pathCell);
+        row.appendChild(filenameCell);
 
-        // 2. Render Left Size Cell
-        const leftSizeCell = document.createElement('div');
-        leftSizeCell.className = 'grid-cell col-size';
-        if (file.left) {
-          leftSizeCell.textContent = formatBytes(file.left.size);
-        } else {
-          leftSizeCell.innerHTML = `<span class="ghost-placeholder">(Absent)</span>`;
-        }
-        row.appendChild(leftSizeCell);
+        // 2. Type Cell
+        const typeCell = document.createElement('div');
+        typeCell.className = 'grid-cell col-type';
+        typeCell.textContent = getFileType(file.name);
+        row.appendChild(typeCell);
 
-        // 3. Render Left Date Cell
+        // 3. Status Cell
+        const statusCell = document.createElement('div');
+        statusCell.className = 'grid-cell col-status';
+        statusCell.innerHTML = getStatusCellHtml(file);
+        row.appendChild(statusCell);
+
+        // 4. Actions Cell (consolidated)
+        const actionsCell = document.createElement('div');
+        actionsCell.className = 'grid-cell col-actions';
+        actionsCell.innerHTML = getActionsCellHtml(file);
+        row.appendChild(actionsCell);
+
+        // 5. Left Date
         const leftDateCell = document.createElement('div');
-        leftDateCell.className = 'grid-cell col-date';
+        leftDateCell.className = 'grid-cell col-left-date';
         if (file.left) {
           leftDateCell.textContent = formatDate(file.left.mtime);
           leftDateCell.title = file.left.mtime;
@@ -664,61 +688,19 @@ function renderGrid() {
         }
         row.appendChild(leftDateCell);
 
-        // 4. Render Left Actions Cell
-        const leftActionsCell = document.createElement('div');
-        leftActionsCell.className = 'grid-cell col-actions';
+        // 6. Left Size
+        const leftSizeCell = document.createElement('div');
+        leftSizeCell.className = 'grid-cell col-left-size';
         if (file.left) {
-          if (file.status === 'left-only') {
-            leftActionsCell.innerHTML = `
-              <button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Sync to Right">
-                <span class="material-symbols-outlined">arrow_forward</span>
-              </button>
-              <button class="icon-btn grid-action-btn btn-delete" data-action="deleteLeft" data-path="${file.relativePath}" title="Delete from Left">
-                <span class="material-symbols-outlined">delete</span>
-              </button>
-            `;
-          } else if (file.status === 'modified') {
-            leftActionsCell.innerHTML = `
-              <button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Keep Left version (Sync Right)">
-                <span class="material-symbols-outlined">arrow_forward</span>
-              </button>
-            `;
-          }
+          leftSizeCell.textContent = formatBytes(file.left.size);
+        } else {
+          leftSizeCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
         }
-        row.appendChild(leftActionsCell);
+        row.appendChild(leftSizeCell);
 
-        // 5. Render Comparison / Status Cell
-        const comparisonCell = document.createElement('div');
-        comparisonCell.className = 'grid-cell col-status';
-        comparisonCell.innerHTML = getStatusCellHtml(file);
-        row.appendChild(comparisonCell);
-
-        // 6. Render Right Actions Cell
-        const rightActionsCell = document.createElement('div');
-        rightActionsCell.className = 'grid-cell col-actions';
-        if (file.right) {
-          if (file.status === 'right-only') {
-            rightActionsCell.innerHTML = `
-              <button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Sync to Left">
-                <span class="material-symbols-outlined">arrow_back</span>
-              </button>
-              <button class="icon-btn grid-action-btn btn-delete" data-action="deleteRight" data-path="${file.relativePath}" title="Delete from Right">
-                <span class="material-symbols-outlined">delete</span>
-              </button>
-            `;
-          } else if (file.status === 'modified') {
-            rightActionsCell.innerHTML = `
-              <button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Keep Right version (Sync Left)">
-                <span class="material-symbols-outlined">arrow_back</span>
-              </button>
-            `;
-          }
-        }
-        row.appendChild(rightActionsCell);
-
-        // 7. Render Right Date Cell
+        // 7. Right Date
         const rightDateCell = document.createElement('div');
-        rightDateCell.className = 'grid-cell col-date';
+        rightDateCell.className = 'grid-cell col-right-date';
         if (file.right) {
           rightDateCell.textContent = formatDate(file.right.mtime);
           rightDateCell.title = file.right.mtime;
@@ -727,37 +709,15 @@ function renderGrid() {
         }
         row.appendChild(rightDateCell);
 
-        // 8. Render Right Size Cell
+        // 8. Right Size
         const rightSizeCell = document.createElement('div');
-        rightSizeCell.className = 'grid-cell col-size';
+        rightSizeCell.className = 'grid-cell col-right-size';
         if (file.right) {
           rightSizeCell.textContent = formatBytes(file.right.size);
         } else {
-          rightSizeCell.innerHTML = `<span class="ghost-placeholder">(Absent)</span>`;
+          rightSizeCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
         }
         row.appendChild(rightSizeCell);
-
-        // 9. Render Right Path Cell
-        const rightPathCell = document.createElement('div');
-        rightPathCell.className = 'grid-cell col-path';
-        if (file.right) {
-          rightPathCell.innerHTML = `
-            <div class="file-cell">
-              ${indentHtml}
-              <span class="material-symbols-outlined file-icon">description</span>
-              <span class="file-name" title="${file.relativePath}">${file.name}</span>
-            </div>
-          `;
-        } else {
-          rightPathCell.innerHTML = `
-            <div class="file-cell ghost-placeholder">
-              ${indentHtml}
-              <span class="material-symbols-outlined file-icon">description</span>
-              <span class="file-name" title="${file.relativePath}">(Absent)</span>
-            </div>
-          `;
-        }
-        row.appendChild(rightPathCell);
 
         gridBody.appendChild(row);
       });
@@ -765,7 +725,7 @@ function renderGrid() {
   });
 }
 
-// Helper: Build Status / Newer Badge HTML
+// Helper: Build Status Badge HTML (no action buttons)
 function getStatusCellHtml(file) {
   if (file.status === 'left-only') {
     return `<span class="status-badge badge-left-only">Left Only</span>`;
@@ -783,14 +743,49 @@ function getStatusCellHtml(file) {
       const isLeft = file.newerSide === 'left';
       newerBadgeHtml = `
         <span class="newer-indicator ${isLeft ? '' : 'right-side-newer'}" title="${isLeft ? 'Left' : 'Right'} is newer by ${file.timeDiffStr}">
-          ${isLeft ? 'Left' : 'Right'} Newer (${file.timeDiffStr})
+          ${isLeft ? '◄' : '►'} ${file.timeDiffStr}
         </span>
       `;
     }
     return `
       <span class="status-badge badge-modified">Modified</span>
       ${newerBadgeHtml}
-      <button class="icon-btn grid-action-btn btn-view-diff" data-action="viewDiff" data-path="${file.relativePath}" title="View side-by-side diff">
+    `;
+  }
+  return '';
+}
+
+// Helper: Build consolidated Actions HTML
+function getActionsCellHtml(file) {
+  if (file.status === 'left-only') {
+    return `
+      <button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Copy to Right">
+        <span class="material-symbols-outlined">arrow_forward</span>
+      </button>
+      <button class="icon-btn grid-action-btn btn-delete" data-action="deleteLeft" data-path="${file.relativePath}" title="Delete from Left">
+        <span class="material-symbols-outlined">delete</span>
+      </button>
+    `;
+  }
+  if (file.status === 'right-only') {
+    return `
+      <button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Copy to Left">
+        <span class="material-symbols-outlined">arrow_back</span>
+      </button>
+      <button class="icon-btn grid-action-btn btn-delete" data-action="deleteRight" data-path="${file.relativePath}" title="Delete from Right">
+        <span class="material-symbols-outlined">delete</span>
+      </button>
+    `;
+  }
+  if (file.status === 'modified') {
+    return `
+      <button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Keep Left (overwrite Right)">
+        <span class="material-symbols-outlined">arrow_forward</span>
+      </button>
+      <button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Keep Right (overwrite Left)">
+        <span class="material-symbols-outlined">arrow_back</span>
+      </button>
+      <button class="icon-btn grid-action-btn btn-view-diff" data-action="viewDiff" data-path="${file.relativePath}" title="View Diff">
         <span class="material-symbols-outlined">difference</span>
       </button>
     `;
@@ -934,7 +929,7 @@ function initResizableColumns() {
 
         // Save widths to localStorage
         const currentWidths = {};
-        const colNames = ['path', 'size', 'date', 'actions', 'status'];
+        const colNames = ['filename', 'type', 'status', 'actions', 'left-date', 'left-size', 'right-date', 'right-size'];
         colNames.forEach(col => {
           const val = gridPanel.style.getPropertyValue(`--col-width-${col}`);
           if (val) {

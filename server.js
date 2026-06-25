@@ -58,9 +58,6 @@ function setupWatchers(leftPath, rightPath) {
   }
   activeWatchers = [];
 
-  // Clear backup state since a new folder scan is initiated
-  lastTransaction = null;
-
   const watcherOptions = {
     ignored: [
       /(^|[\/\\])\../, // ignore dotfiles (e.g. .git, .DS_Store)
