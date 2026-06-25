@@ -88,6 +88,9 @@ function setupWatchers(leftPath, rightPath) {
   leftWatcher.on('all', (event, filePath) => handleEvent(event, filePath, 'left'));
   rightWatcher.on('all', (event, filePath) => handleEvent(event, filePath, 'right'));
 
+  leftWatcher.on('error', error => console.error('Left Watcher Error (ignored):', error.message || error));
+  rightWatcher.on('error', error => console.error('Right Watcher Error (ignored):', error.message || error));
+
   activeWatchers.push(leftWatcher, rightWatcher);
 }
 

@@ -190,11 +190,17 @@ function condensePaths(left, right) {
 // Update the grid headers with condensed paths
 function updateHeaders() {
   if (!scanResult) return;
-  const condensed = condensePaths(scanResult.leftPath, scanResult.rightPath);
-  const leftHeader = document.querySelector('.header-col.col-pane-left');
-  const rightHeader = document.querySelector('.header-col.col-pane-right');
-  if (leftHeader) leftHeader.textContent = condensed.left;
-  if (rightHeader) rightHeader.textContent = condensed.right;
+  
+  // Set title tooltip on all left and right headers using nth-child
+  const leftHeaders = document.querySelectorAll('.header-col:nth-child(-n+4)');
+  const rightHeaders = document.querySelectorAll('.header-col:nth-child(n+6)');
+  
+  leftHeaders.forEach(col => {
+    col.title = `Left Folder: ${scanResult.leftPath}`;
+  });
+  rightHeaders.forEach(col => {
+    col.title = `Right Folder: ${scanResult.rightPath}`;
+  });
 }
 
 // Setup EventSource for SSE watcher connection
@@ -584,17 +590,12 @@ function renderGrid() {
         const indentHtml = `<span class="file-indent" style="width: ${depth * 16}px"></span>`;
         
         folderRow.innerHTML = `
-          <div class="grid-cell col-path">
-            <div class="folder-cell">
-              ${indentHtml}
-              <span class="material-symbols-outlined folder-toggle-icon">arrow_drop_down</span>
-              <span class="material-symbols-outlined folder-icon">folder</span>
-              <span>${folderPath}</span>
-            </div>
+          <div class="folder-cell">
+            ${indentHtml}
+            <span class="material-symbols-outlined folder-toggle-icon">arrow_drop_down</span>
+            <span class="material-symbols-outlined folder-icon">folder</span>
+            <span>${folderPath}</span>
           </div>
-          <div class="grid-cell col-pane-left"></div>
-          <div class="grid-cell col-comparison"></div>
-          <div class="grid-cell col-pane-right"></div>
         `;
         
         folderRow.addEventListener('click', () => {
@@ -620,65 +621,143 @@ function renderGrid() {
         const depth = folderPath === '' ? 0 : folderPath.split('/').length;
         const indentHtml = `<span class="file-indent" style="width: ${depth * 16}px"></span>`;
 
-        // Render File Relative Path Cell
+        // 1. Render Left Path Cell
         const pathCell = document.createElement('div');
         pathCell.className = 'grid-cell col-path';
-        pathCell.innerHTML = `
-          <div class="file-cell">
-            ${indentHtml}
-            <span class="material-symbols-outlined file-icon">description</span>
-            <span class="file-name" title="${file.relativePath}">${file.name}</span>
-          </div>
-        `;
-        row.appendChild(pathCell);
-
-        // Render Left Pane Cell
-        const leftCell = document.createElement('div');
-        leftCell.className = 'grid-cell col-pane-left';
         if (file.left) {
-          leftCell.innerHTML = `
-            <div class="pane-details">
-              <span class="file-size">${formatBytes(file.left.size)}</span>
-              <span class="file-mtime" title="${file.left.mtime}">${formatDate(file.left.mtime)}</span>
+          pathCell.innerHTML = `
+            <div class="file-cell">
+              ${indentHtml}
+              <span class="material-symbols-outlined file-icon">description</span>
+              <span class="file-name" title="${file.relativePath}">${file.name}</span>
             </div>
           `;
         } else {
-          // Ghost Placeholder for absent left file
-          leftCell.innerHTML = `
-            <div class="pane-details ghost-placeholder" title="Absent from Left">
-              <span class="file-size">${formatBytes(file.right.size)} (Absent)</span>
-              <span class="file-mtime">-</span>
+          pathCell.innerHTML = `
+            <div class="file-cell ghost-placeholder">
+              ${indentHtml}
+              <span class="material-symbols-outlined file-icon">description</span>
+              <span class="file-name" title="${file.relativePath}">(Absent)</span>
             </div>
           `;
         }
-        row.appendChild(leftCell);
+        row.appendChild(pathCell);
 
-        // Render Status / Newer Arrow Cell
+        // 2. Render Left Size Cell
+        const leftSizeCell = document.createElement('div');
+        leftSizeCell.className = 'grid-cell col-size';
+        if (file.left) {
+          leftSizeCell.textContent = formatBytes(file.left.size);
+        } else {
+          leftSizeCell.innerHTML = `<span class="ghost-placeholder">(Absent)</span>`;
+        }
+        row.appendChild(leftSizeCell);
+
+        // 3. Render Left Date Cell
+        const leftDateCell = document.createElement('div');
+        leftDateCell.className = 'grid-cell col-date';
+        if (file.left) {
+          leftDateCell.textContent = formatDate(file.left.mtime);
+          leftDateCell.title = file.left.mtime;
+        } else {
+          leftDateCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
+        }
+        row.appendChild(leftDateCell);
+
+        // 4. Render Left Actions Cell
+        const leftActionsCell = document.createElement('div');
+        leftActionsCell.className = 'grid-cell col-actions';
+        if (file.left) {
+          if (file.status === 'left-only') {
+            leftActionsCell.innerHTML = `
+              <button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Sync to Right">
+                <span class="material-symbols-outlined">arrow_forward</span>
+              </button>
+              <button class="icon-btn grid-action-btn btn-delete" data-action="deleteLeft" data-path="${file.relativePath}" title="Delete from Left">
+                <span class="material-symbols-outlined">delete</span>
+              </button>
+            `;
+          } else if (file.status === 'modified') {
+            leftActionsCell.innerHTML = `
+              <button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Keep Left version (Sync Right)">
+                <span class="material-symbols-outlined">arrow_forward</span>
+              </button>
+            `;
+          }
+        }
+        row.appendChild(leftActionsCell);
+
+        // 5. Render Comparison / Status Cell
         const comparisonCell = document.createElement('div');
-        comparisonCell.className = 'grid-cell col-comparison status-cell';
+        comparisonCell.className = 'grid-cell col-status';
         comparisonCell.innerHTML = getStatusCellHtml(file);
         row.appendChild(comparisonCell);
 
-        // Render Right Pane Cell
-        const rightCell = document.createElement('div');
-        rightCell.className = 'grid-cell col-pane-right';
+        // 6. Render Right Actions Cell
+        const rightActionsCell = document.createElement('div');
+        rightActionsCell.className = 'grid-cell col-actions';
         if (file.right) {
-          rightCell.innerHTML = `
-            <div class="pane-details">
-              <span class="file-size">${formatBytes(file.right.size)}</span>
-              <span class="file-mtime" title="${file.right.mtime}">${formatDate(file.right.mtime)}</span>
+          if (file.status === 'right-only') {
+            rightActionsCell.innerHTML = `
+              <button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Sync to Left">
+                <span class="material-symbols-outlined">arrow_back</span>
+              </button>
+              <button class="icon-btn grid-action-btn btn-delete" data-action="deleteRight" data-path="${file.relativePath}" title="Delete from Right">
+                <span class="material-symbols-outlined">delete</span>
+              </button>
+            `;
+          } else if (file.status === 'modified') {
+            rightActionsCell.innerHTML = `
+              <button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Keep Right version (Sync Left)">
+                <span class="material-symbols-outlined">arrow_back</span>
+              </button>
+            `;
+          }
+        }
+        row.appendChild(rightActionsCell);
+
+        // 7. Render Right Date Cell
+        const rightDateCell = document.createElement('div');
+        rightDateCell.className = 'grid-cell col-date';
+        if (file.right) {
+          rightDateCell.textContent = formatDate(file.right.mtime);
+          rightDateCell.title = file.right.mtime;
+        } else {
+          rightDateCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
+        }
+        row.appendChild(rightDateCell);
+
+        // 8. Render Right Size Cell
+        const rightSizeCell = document.createElement('div');
+        rightSizeCell.className = 'grid-cell col-size';
+        if (file.right) {
+          rightSizeCell.textContent = formatBytes(file.right.size);
+        } else {
+          rightSizeCell.innerHTML = `<span class="ghost-placeholder">(Absent)</span>`;
+        }
+        row.appendChild(rightSizeCell);
+
+        // 9. Render Right Path Cell
+        const rightPathCell = document.createElement('div');
+        rightPathCell.className = 'grid-cell col-path';
+        if (file.right) {
+          rightPathCell.innerHTML = `
+            <div class="file-cell">
+              ${indentHtml}
+              <span class="material-symbols-outlined file-icon">description</span>
+              <span class="file-name" title="${file.relativePath}">${file.name}</span>
             </div>
           `;
         } else {
-          // Ghost Placeholder for absent right file
-          rightCell.innerHTML = `
-            <div class="pane-details ghost-placeholder" title="Absent from Right">
-              <span class="file-size">${formatBytes(file.left.size)} (Absent)</span>
-              <span class="file-mtime">-</span>
+          rightPathCell.innerHTML = `
+            <div class="file-cell ghost-placeholder">
+              ${indentHtml}
+              <span class="material-symbols-outlined file-icon">description</span>
+              <span class="file-name" title="${file.relativePath}">(Absent)</span>
             </div>
           `;
         }
-        row.appendChild(rightCell);
+        row.appendChild(rightPathCell);
 
         gridBody.appendChild(row);
       });
@@ -686,62 +765,34 @@ function renderGrid() {
   });
 }
 
-// Helper: Build Status / Newer Badge HTML with Conflict Resolution Buttons
+// Helper: Build Status / Newer Badge HTML
 function getStatusCellHtml(file) {
   if (file.status === 'left-only') {
-    return `
-      <div class="conflict-badge-wrapper">
-        <span class="status-badge badge-left-only">Left Only</span>
-        <div class="grid-actions">
-          <button class="grid-action-btn btn-keep-left" data-action="keepLeft" data-path="${file.relativePath}">
-            <span class="material-symbols-outlined">arrow_forward</span> Sync Right
-          </button>
-          <button class="grid-action-btn" data-action="deleteLeft" data-path="${file.relativePath}" title="Delete from Left">
-            <span class="material-symbols-outlined">delete</span>
-          </button>
-        </div>
-      </div>
-    `;
+    return `<span class="status-badge badge-left-only">Left Only</span>`;
   }
   if (file.status === 'right-only') {
-    return `
-      <div class="conflict-badge-wrapper">
-        <span class="status-badge badge-right-only">Right Only</span>
-        <div class="grid-actions">
-          <button class="grid-action-btn btn-keep-right" data-action="keepRight" data-path="${file.relativePath}">
-            <span class="material-symbols-outlined">arrow_back</span> Sync Left
-          </button>
-          <button class="grid-action-btn" data-action="deleteRight" data-path="${file.relativePath}" title="Delete from Right">
-            <span class="material-symbols-outlined">delete</span>
-          </button>
-        </div>
-      </div>
-    `;
+    return `<span class="status-badge badge-right-only">Right Only</span>`;
   }
   if (file.status === 'identical') {
     return `<span class="status-badge badge-identical">Identical</span>`;
   }
   
-  // Modified File Layout (Conflict)
   if (file.status === 'modified') {
+    let newerBadgeHtml = '';
+    if (file.newerSide) {
+      const isLeft = file.newerSide === 'left';
+      newerBadgeHtml = `
+        <span class="newer-indicator ${isLeft ? '' : 'right-side-newer'}" title="${isLeft ? 'Left' : 'Right'} is newer by ${file.timeDiffStr}">
+          ${isLeft ? 'Left' : 'Right'} Newer (${file.timeDiffStr})
+        </span>
+      `;
+    }
     return `
-      <div class="conflict-badge-wrapper">
-        <div class="conflict-warning-row">
-          <span class="material-symbols-outlined conflict-icon">warning</span>
-          <span class="status-badge badge-modified">Diff</span>
-        </div>
-        <div class="grid-actions">
-          <button class="grid-action-btn btn-keep-left" data-action="keepLeft" data-path="${file.relativePath}" title="Keep Left version on both sides">
-            <span class="material-symbols-outlined">arrow_forward</span> Keep L
-          </button>
-          <button class="grid-action-btn btn-keep-right" data-action="keepRight" data-path="${file.relativePath}" title="Keep Right version on both sides">
-            <span class="material-symbols-outlined">arrow_back</span> Keep R
-          </button>
-          <button class="grid-action-btn" data-action="viewDiff" data-path="${file.relativePath}" title="View side-by-side diff">
-            <span class="material-symbols-outlined">difference</span> Diff
-          </button>
-        </div>
-      </div>
+      <span class="status-badge badge-modified">Modified</span>
+      ${newerBadgeHtml}
+      <button class="icon-btn grid-action-btn btn-view-diff" data-action="viewDiff" data-path="${file.relativePath}" title="View side-by-side diff">
+        <span class="material-symbols-outlined">difference</span>
+      </button>
     `;
   }
   return '';
@@ -829,4 +880,72 @@ document.addEventListener('DOMContentLoaded', () => {
   
   if (cachedLeft) leftPathInput.value = cachedLeft;
   if (cachedRight) rightPathInput.value = cachedRight;
+
+  // Initialize resizable columns behavior
+  initResizableColumns();
 });
+
+// Resizable Columns Logic
+function initResizableColumns() {
+  const gridPanel = document.querySelector('.grid-panel');
+  const headers = document.querySelectorAll('.header-col');
+  
+  // Load saved column widths from localStorage
+  const savedWidths = localStorage.getItem('comparer_col_widths');
+  if (savedWidths) {
+    try {
+      const widths = JSON.parse(savedWidths);
+      Object.keys(widths).forEach(col => {
+        gridPanel.style.setProperty(`--col-width-${col}`, widths[col]);
+      });
+    } catch (e) {
+      console.error('Error loading column widths:', e);
+    }
+  }
+
+  headers.forEach(header => {
+    const handle = header.querySelector('.resize-handle');
+    if (!handle) return;
+
+    const colName = handle.getAttribute('data-col');
+
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      
+      handle.classList.add('active');
+      document.body.style.cursor = 'col-resize';
+      
+      const startX = e.clientX;
+      const startWidth = header.getBoundingClientRect().width;
+
+      const onMouseMove = (moveEvent) => {
+        const dx = moveEvent.clientX - startX;
+        const newWidth = Math.max(50, startWidth + dx); // Enforce min width of 50px
+        
+        gridPanel.style.setProperty(`--col-width-${colName}`, `${newWidth}px`);
+      };
+
+      const onMouseUp = () => {
+        handle.classList.remove('active');
+        document.body.style.cursor = '';
+        
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+
+        // Save widths to localStorage
+        const currentWidths = {};
+        const colNames = ['path', 'size', 'date', 'actions', 'status'];
+        colNames.forEach(col => {
+          const val = gridPanel.style.getPropertyValue(`--col-width-${col}`);
+          if (val) {
+            currentWidths[col] = val.trim();
+          }
+        });
+        localStorage.setItem('comparer_col_widths', JSON.stringify(currentWidths));
+      };
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
+}

@@ -17,93 +17,81 @@
     <!-- Top Google-style thin gradient accent -->
     <div class="gemini-accent-bar"></div>
 
-    <!-- Header Panel -->
+    <!-- Combined High-Density Control Header -->
     <header class="app-header">
-      <div class="header-logo">
-        <span class="material-symbols-outlined logo-icon">compare_arrows</span>
-        <div class="logo-text">
+      <!-- Row 1: Logo & Path Inputs & Compare Action -->
+      <div class="header-row-primary">
+        <div class="header-logo">
+          <span class="material-symbols-outlined logo-icon">compare_arrows</span>
           <span class="logo-title">Comparer</span>
-          <span class="logo-subtitle">Folder Compare Engine</span>
         </div>
-      </div>
-      <div class="header-actions">
-        <span class="version-badge">v1.0.0</span>
-      </div>
-    </header>
 
-    <!-- Path Configuration Panel -->
-    <section class="path-panel">
-      <div class="input-row">
-        <div class="path-input-group">
-          <label for="left-path">Left Folder Path</label>
+        <div class="path-inputs-group">
           <div class="input-wrapper">
             <span class="material-symbols-outlined input-icon">folder</span>
-            <input type="text" id="left-path" placeholder="C:\Users\username\folder-a" value="">
+            <input type="text" id="left-path" placeholder="Left folder path..." title="Left Folder Path">
           </div>
-        </div>
 
-        <div class="scan-controls">
           <button id="scan-btn" class="primary-btn">
             <span class="material-symbols-outlined">sync_alt</span>
             <span>Compare</span>
           </button>
-        </div>
 
-        <div class="path-input-group">
-          <label for="right-path">Right Folder Path</label>
           <div class="input-wrapper">
             <span class="material-symbols-outlined input-icon">folder</span>
-            <input type="text" id="right-path" placeholder="C:\Users\username\folder-b" value="">
+            <input type="text" id="right-path" placeholder="Right folder path..." title="Right Folder Path">
           </div>
         </div>
+
+        <span class="version-badge">v1.0.0</span>
       </div>
 
-      <div class="options-row">
-        <label class="checkbox-label">
-          <input type="checkbox" id="option-recursive" checked>
-          <span>Scan subfolders recursively</span>
-        </label>
-        <label class="checkbox-label">
-          <input type="checkbox" id="option-scrolllock" checked>
-          <span>Sync pane scroll position</span>
-        </label>
-      </div>
-    </section>
+      <!-- Row 2: Search & Options & Filter Tabs -->
+      <div class="header-row-secondary">
+        <div class="search-wrapper">
+          <span class="material-symbols-outlined search-icon">search</span>
+          <input type="text" id="search-input" placeholder="Filter files by name or extension...">
+        </div>
 
-    <!-- Toolbar: Search & Filters -->
-    <section class="toolbar-panel">
-      <div class="search-wrapper">
-        <span class="material-symbols-outlined search-icon">search</span>
-        <input type="text" id="search-input" placeholder="Filter files by name or extension...">
-      </div>
+        <div class="options-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="option-recursive" checked>
+            <span>Scan subfolders recursively</span>
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" id="option-scrolllock" checked>
+            <span>Sync pane scroll position</span>
+          </label>
+        </div>
 
-      <div class="filter-tabs">
-        <button class="filter-tab active" data-filter="all">
-          <span>All</span>
-          <span class="tab-count" id="count-all">0</span>
-        </button>
-        <button class="filter-tab" data-filter="diff">
-          <span class="indicator-dot dot-modified"></span>
-          <span>Differences</span>
-          <span class="tab-count" id="count-diff">0</span>
-        </button>
-        <button class="filter-tab" data-filter="match">
-          <span class="indicator-dot dot-identical"></span>
-          <span>Matches</span>
-          <span class="tab-count" id="count-match">0</span>
-        </button>
-        <button class="filter-tab" data-filter="left">
-          <span class="indicator-dot dot-left"></span>
-          <span>Left Only</span>
-          <span class="tab-count" id="count-left">0</span>
-        </button>
-        <button class="filter-tab" data-filter="right">
-          <span class="indicator-dot dot-right"></span>
-          <span>Right Only</span>
-          <span class="tab-count" id="count-right">0</span>
-        </button>
+        <div class="filter-tabs">
+          <button class="filter-tab active" data-filter="all">
+            <span>All</span>
+            <span class="tab-count" id="count-all">0</span>
+          </button>
+          <button class="filter-tab" data-filter="diff">
+            <span class="indicator-dot dot-modified"></span>
+            <span>Differences</span>
+            <span class="tab-count" id="count-diff">0</span>
+          </button>
+          <button class="filter-tab" data-filter="match">
+            <span class="indicator-dot dot-identical"></span>
+            <span>Matches</span>
+            <span class="tab-count" id="count-match">0</span>
+          </button>
+          <button class="filter-tab" data-filter="left">
+            <span class="indicator-dot dot-left"></span>
+            <span>Left Only</span>
+            <span class="tab-count" id="count-left">0</span>
+          </button>
+          <button class="filter-tab" data-filter="right">
+            <span class="indicator-dot dot-right"></span>
+            <span>Right Only</span>
+            <span class="tab-count" id="count-right">0</span>
+          </button>
+        </div>
       </div>
-    </section>
+    </header>
 
     <!-- Undo Transaction Banner -->
     <div id="undo-banner" class="undo-banner hidden">
@@ -119,15 +107,45 @@
 
     <!-- Directory Comparison Grid -->
     <main class="grid-panel">
-      <div class="grid-header">
-        <div class="header-col col-path">Relative Path</div>
-        <div class="header-col col-pane-left">Left Pane</div>
-        <div class="header-col col-comparison">Status / Newer</div>
-        <div class="header-col col-pane-right">Right Pane</div>
-      </div>
-      
-      <div class="grid-body-wrapper">
-        <!-- Unified scrolls columns dynamically -->
+      <div class="grid-scroll-container">
+        <div class="grid-header">
+          <div class="header-col col-path">
+            <span>Path</span>
+            <div class="resize-handle" data-col="path"></div>
+          </div>
+          <div class="header-col col-size">
+            <span>Size</span>
+            <div class="resize-handle" data-col="size"></div>
+          </div>
+          <div class="header-col col-date">
+            <span>Date</span>
+            <div class="resize-handle" data-col="date"></div>
+          </div>
+          <div class="header-col col-actions">
+            <span>Actions</span>
+            <div class="resize-handle" data-col="actions"></div>
+          </div>
+          <div class="header-col col-status">
+            <span>Status</span>
+            <div class="resize-handle" data-col="status"></div>
+          </div>
+          <div class="header-col col-actions">
+            <span>Actions</span>
+            <div class="resize-handle" data-col="actions"></div>
+          </div>
+          <div class="header-col col-date">
+            <span>Date</span>
+            <div class="resize-handle" data-col="date"></div>
+          </div>
+          <div class="header-col col-size">
+            <span>Size</span>
+            <div class="resize-handle" data-col="size"></div>
+          </div>
+          <div class="header-col col-path">
+            <span>Path</span>
+          </div>
+        </div>
+        
         <div class="grid-body" id="comparison-grid-body">
           <div class="empty-state">
             <span class="material-symbols-outlined empty-icon">folder_open</span>
