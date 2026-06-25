@@ -417,6 +417,228 @@ function hideUndoToast() {
   undoBanner.classList.add('hidden');
 }
 
+// Track open diff popup windows so they can be re-focused / closed on rescan.
+const openDiffWindows = new Map();
+
+// Open a diff in a real, separately resizable OS window (popup).
+// Falls back to the in-page modal if the popup is blocked.
+async function openDiffWindow(file) {
+  if (!scanResult) return;
+  const relativePath = file.relativePath;
+
+  // Re-focus an already-open window for this file instead of duplicating.
+  const existing = openDiffWindows.get(relativePath);
+  if (existing && !existing.closed) {
+    existing.focus();
+    return;
+  }
+
+  const win = window.open('', `diff_${relativePath.replace(/[^a-z0-9]/gi, '_')}`,
+    'width=1200,height=800,resizable=yes,scrollbars=yes');
+  if (!win) {
+    // Popup blocked — fall back to the in-page modal.
+    showDiffModal(file);
+    return;
+  }
+  openDiffWindows.set(relativePath, win);
+
+  const condensed = condensePaths(scanResult.leftPath, scanResult.rightPath);
+  const binary = isBinaryFile(file.name);
+
+  // Build a self-contained document that reuses the app stylesheet so the
+  // popup matches the main UI.
+  const leftIsNewer = file.newerSide === 'left';
+  const rightIsNewer = file.newerSide === 'right';
+  const leftLabel = leftIsNewer ? `${condensed.left} · New` : rightIsNewer ? `${condensed.left} · Old` : condensed.left;
+  const rightLabel = rightIsNewer ? `${condensed.right} · New` : leftIsNewer ? `${condensed.right} · Old` : condensed.right;
+  const leftHeaderClass = `diff-pane-header${leftIsNewer ? ' pane-newer' : rightIsNewer ? ' pane-older' : ''}`;
+  const rightHeaderClass = `diff-pane-header${rightIsNewer ? ' pane-newer' : leftIsNewer ? ' pane-older' : ''}`;
+
+  const keepLeftLabel = leftIsNewer ? 'Replace with Old' : rightIsNewer ? 'Replace with New' : 'Replace with Right';
+  const keepRightLabel = rightIsNewer ? 'Replace with Old' : leftIsNewer ? 'Replace with New' : 'Replace with Left';
+
+  const origin = window.location.origin;
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Diff: ${escapeHtml(file.name)}</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined">
+  <link rel="stylesheet" href="${origin}/style.css">
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; background: var(--google-gray-bg); }
+    .diff-win-header { display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 16px; border-bottom: 1px solid var(--google-gray-border);
+      background: var(--google-gray-surface); gap: 12px; }
+    .diff-win-title { display: flex; flex-direction: column; min-width: 0; }
+    .diff-win-title h3 { margin: 0; font-size: 14px; }
+    .diff-win-title .modal-subtitle { font-size: 11px; color: var(--text-secondary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .diff-win-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .diff-win-body { flex: 1; padding: 16px; overflow: hidden; }
+    .diff-win-footer { display: flex; gap: 12px; padding: 12px 16px;
+      border-top: 1px solid var(--google-gray-border); background: var(--google-gray-surface); }
+  </style>
+</head>
+<body>
+  <header class="diff-win-header">
+    <div class="diff-win-title">
+      <h3>Comparing File: ${escapeHtml(file.name)}</h3>
+      <span class="modal-subtitle">${escapeHtml(relativePath)}</span>
+    </div>
+    <div class="diff-win-actions">
+      <button id="win-diffs-only" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Show diffs only">
+        <span class="material-symbols-outlined">format_list_bulleted</span>
+        <span class="modal-action-label">Diffs only</span>
+      </button>
+    </div>
+  </header>
+  <div class="diff-win-body">
+    <div id="win-text-container" class="diff-split-container${binary ? ' hidden' : ''}">
+      <div class="diff-pane">
+        <div class="${leftHeaderClass}">${escapeHtml(leftLabel)}</div>
+        <pre class="diff-code" id="win-left-code">Loading diff...</pre>
+      </div>
+      <div class="diff-pane">
+        <div class="${rightHeaderClass}">${escapeHtml(rightLabel)}</div>
+        <pre class="diff-code" id="win-right-code">Loading diff...</pre>
+      </div>
+    </div>
+    <div id="win-binary-container" class="diff-binary-container${binary ? '' : ' hidden'}">
+      <div class="binary-grid">
+        <div class="binary-header-col">Property</div>
+        <div class="binary-header-col">${escapeHtml(leftLabel)}</div>
+        <div class="binary-header-col">${escapeHtml(rightLabel)}</div>
+        <div class="binary-row">
+          <div class="binary-label">File Size</div>
+          <div class="binary-val">${file.left ? formatBytes(file.left.size) : 'Absent'}</div>
+          <div class="binary-val">${file.right ? formatBytes(file.right.size) : 'Absent'}</div>
+        </div>
+        <div class="binary-row">
+          <div class="binary-label">Modified Time</div>
+          <div class="binary-val">${file.left ? formatDate(file.left.mtime, file.right?.mtime) : 'Absent'}</div>
+          <div class="binary-val">${file.right ? formatDate(file.right.mtime, file.left?.mtime) : 'Absent'}</div>
+        </div>
+        <div class="binary-row">
+          <div class="binary-label">MD5 Hash</div>
+          <div class="binary-val" id="win-left-hash">${file.left ? 'Calculating...' : '-'}</div>
+          <div class="binary-val" id="win-right-hash">${file.right ? 'Calculating...' : '-'}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <footer class="diff-win-footer">
+    <button id="win-keep-left" class="primary-btn flex-btn btn-keep-new-modal"${file.right ? '' : ' disabled'}>
+      <span class="material-symbols-outlined">arrow_back</span><span> ${escapeHtml(keepLeftLabel)}</span>
+    </button>
+    <button id="win-keep-right" class="primary-btn flex-btn btn-keep-old-modal"${file.left ? '' : ' disabled'}>
+      <span class="material-symbols-outlined">arrow_forward</span><span> ${escapeHtml(keepRightLabel)}</span>
+    </button>
+    <button id="win-close" class="secondary-btn">Close</button>
+  </footer>
+</body>
+</html>`);
+  win.document.close();
+
+  const wd = win.document;
+
+  // Clean up our reference when the window is closed.
+  win.addEventListener('beforeunload', () => openDiffWindows.delete(relativePath));
+
+  // Footer actions delegate back to the opener so sync uses the same code path.
+  wd.getElementById('win-close').onclick = () => win.close();
+  wd.getElementById('win-keep-left').onclick = () => {
+    performSyncAction(relativePath, 'keepRight');
+    win.close();
+  };
+  wd.getElementById('win-keep-right').onclick = () => {
+    performSyncAction(relativePath, 'keepLeft');
+    win.close();
+  };
+
+  if (binary) {
+    if (file.left) {
+      getFileHashFromServer(scanResult.leftPath + '/' + relativePath)
+        .then(hash => { if (!win.closed) wd.getElementById('win-left-hash').textContent = hash; });
+    }
+    if (file.right) {
+      getFileHashFromServer(scanResult.rightPath + '/' + relativePath)
+        .then(hash => { if (!win.closed) wd.getElementById('win-right-hash').textContent = hash; });
+    }
+    return;
+  }
+
+  // Text diff: fetch and render rows.
+  const leftCode = wd.getElementById('win-left-code');
+  const rightCode = wd.getElementById('win-right-code');
+  const textContainer = wd.getElementById('win-text-container');
+
+  // Diffs-only toggle (local to this window).
+  wd.getElementById('win-diffs-only').onclick = (e) => {
+    const isActive = textContainer.classList.toggle('diffs-only');
+    e.currentTarget.classList.toggle('active', isActive);
+  };
+
+  // Scroll-sync the two panes (respects the main window's scroll-lock checkbox).
+  let syncingLeft = false, syncingRight = false;
+  leftCode.addEventListener('scroll', () => {
+    if (!scrollLockCheckbox.checked || syncingLeft) return;
+    syncingRight = true;
+    rightCode.scrollTop = leftCode.scrollTop;
+    rightCode.scrollLeft = leftCode.scrollLeft;
+    syncingRight = false;
+  });
+  rightCode.addEventListener('scroll', () => {
+    if (!scrollLockCheckbox.checked || syncingRight) return;
+    syncingLeft = true;
+    leftCode.scrollTop = rightCode.scrollTop;
+    leftCode.scrollLeft = rightCode.scrollLeft;
+    syncingLeft = false;
+  });
+
+  try {
+    const res = await fetch('/api/diff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leftPath: scanResult.leftPath, rightPath: scanResult.rightPath, relativePath })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    if (win.closed) return;
+
+    leftCode.innerHTML = '';
+    rightCode.innerHTML = '';
+    data.rows.forEach(row => {
+      const l = wd.createElement('div');
+      l.className = 'diff-line';
+      if (row.left === null) {
+        l.classList.add('type-empty');
+        l.innerHTML = `<span class="diff-line-num"></span><span class="diff-line-content"></span>`;
+      } else {
+        l.classList.add(`type-${row.left.type}`);
+        l.innerHTML = `<span class="diff-line-num">${row.left.lineNum}</span><span class="diff-line-content">${escapeHtml(row.left.text)}</span>`;
+      }
+      leftCode.appendChild(l);
+
+      const r = wd.createElement('div');
+      r.className = 'diff-line';
+      if (row.right === null) {
+        r.classList.add('type-empty');
+        r.innerHTML = `<span class="diff-line-num"></span><span class="diff-line-content"></span>`;
+      } else {
+        r.classList.add(`type-${row.right.type}`);
+        r.innerHTML = `<span class="diff-line-num">${row.right.lineNum}</span><span class="diff-line-content">${escapeHtml(row.right.text)}</span>`;
+      }
+      rightCode.appendChild(r);
+    });
+  } catch (err) {
+    if (win.closed) return;
+    leftCode.textContent = `Error loading diff: ${err.message}`;
+    rightCode.textContent = `Error loading diff: ${err.message}`;
+  }
+}
+
 // Show Diff Modal side-by-side
 async function showDiffModal(file) {
   if (!scanResult) return;
@@ -959,7 +1181,7 @@ gridBody.addEventListener('click', (e) => {
   if (!fileObj) return;
 
   if (action === 'viewDiff') {
-    showDiffModal(fileObj);
+    openDiffWindow(fileObj);
   } else {
     performSyncAction(relativePath, action);
   }
