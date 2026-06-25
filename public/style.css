@@ -852,6 +852,48 @@ body {
   color: var(--color-right-only);
 }
 
+/* Missing-side reminder: folder directory path shown in light text on the side
+   where the file is absent. The overlay lives inside the (correctly-aligned)
+   date cell and overflows rightward across the empty size/action cells, so it
+   never disturbs the grid's column sizing. */
+.missing-side-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  font-size: 10px;
+  font-style: italic;
+  color: var(--text-disabled);
+  white-space: nowrap;
+  pointer-events: none;
+  /* Auto-size to the full path and let it float over the rest of the row,
+     so the whole path is always visible without resizing any cells. */
+  width: max-content;
+  max-width: none;
+  z-index: 2;
+}
+.col-left-date,
+.col-right-date {
+  position: relative;
+}
+/* Right-side path grows leftward from the right action column so it stays
+   inside the row rather than overflowing past the last column. */
+.missing-side-overlay.missing-right {
+  left: auto;
+  right: 0;
+  justify-content: flex-end;
+}
+/* Hide the "-" placeholders on the side the overlay covers. */
+.grid-row.status-left-only .col-right-date .ghost-placeholder,
+.grid-row.status-left-only .col-right-size .ghost-placeholder,
+.grid-row.status-right-only .col-left-date .ghost-placeholder,
+.grid-row.status-right-only .col-left-size .ghost-placeholder {
+  visibility: hidden;
+}
+
 /* Modified — no background tint, just bold date on the newer side */
 .grid-row.newer-left .grid-cell:nth-child(5),
 .grid-row.newer-right .grid-cell:nth-child(8) {

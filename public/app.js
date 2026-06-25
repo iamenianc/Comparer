@@ -1083,6 +1083,25 @@ function renderGrid() {
         rightActionCell.innerHTML = getRightActionHtml(file);
         row.appendChild(rightActionCell);
 
+        // Missing-side reminder: show the folder directory path (light text) on
+        // the side where the file is absent. The overlay is anchored inside that
+        // side's date cell and overflows across the empty size/action cells, so
+        // it never disturbs the grid's column alignment.
+        if (!file.left || !file.right) {
+          const missingSide = !file.left ? 'left' : 'right';
+          const rootPath = missingSide === 'left' ? scanResult.leftPath : scanResult.rightPath;
+          const dir = file.relativePath.includes('/')
+            ? file.relativePath.slice(0, file.relativePath.lastIndexOf('/'))
+            : '';
+          const folderPathText = dir ? `${rootPath}/${dir}` : rootPath;
+          const overlay = document.createElement('div');
+          overlay.className = `missing-side-overlay missing-${missingSide}`;
+          overlay.textContent = folderPathText;
+          overlay.title = `File missing in ${folderPathText}`;
+          const anchorCell = missingSide === 'left' ? leftDateCell : rightDateCell;
+          anchorCell.appendChild(overlay);
+        }
+
         gridBody.appendChild(row);
       });
     }
