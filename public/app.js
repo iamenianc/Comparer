@@ -29,6 +29,12 @@ const undoBanner = document.getElementById('undo-banner');
 const undoBannerMessage = document.getElementById('undo-banner-message');
 const undoBtn = document.getElementById('undo-btn');
 const closeUndoBannerBtn = document.getElementById('close-undo-banner-btn');
+const statusLight = document.getElementById('status-indicator-light');
+
+function setStatusLight(state) {
+  if (!statusLight) return;
+  statusLight.className = 'status-indicator-light' + (state ? ` state-${state}` : '');
+}
 
 // Diff Modal elements
 const diffModal = document.getElementById('diff-modal');
@@ -47,8 +53,8 @@ const binaryLeftMtime = document.getElementById('binary-left-mtime');
 const binaryRightMtime = document.getElementById('binary-right-mtime');
 const binaryLeftHash = document.getElementById('binary-left-hash');
 const binaryRightHash = document.getElementById('binary-right-hash');
-const diffModalKeepLeft = document.getElementById('diff-modal-keep-left');
-const diffModalKeepRight = document.getElementById('diff-modal-keep-right');
+const diffModalKeepNew = document.getElementById('diff-modal-keep-new');
+const diffModalKeepOld = document.getElementById('diff-modal-keep-old');
 const closeDiffModalFooterBtn = document.getElementById('close-diff-modal-footer-btn');
 
 // Helper: Format bytes to human readable string
@@ -91,6 +97,7 @@ async function runScan() {
   };
 
   // Set scanning UI state
+  setStatusLight('scanning');
   scanBtn.disabled = true;
   scanBtn.querySelector('span:last-child').textContent = 'Scanning...';
   statusText.textContent = 'Comparing directories...';
@@ -128,9 +135,11 @@ async function runScan() {
     updateHeaders();
     renderGrid();
     setupSSEWatcher();
+    setStatusLight('done');
     statusText.textContent = 'Scan Completed';
   } catch (error) {
     console.error('Scan error:', error);
+    setStatusLight('error');
     gridBody.innerHTML = `
       <div class="empty-state">
         <span class="material-symbols-outlined empty-icon" style="color:var(--color-right-only)">error</span>
@@ -332,10 +341,8 @@ async function undoLastAction() {
 // Toast Banner controls
 function showUndoToast(relativePath, action) {
   let actionStr = '';
-  if (action === 'keepLeft') actionStr = 'Left copied to Right';
-  else if (action === 'keepRight') actionStr = 'Right copied to Left';
-  else if (action === 'deleteLeft') actionStr = 'Left deleted';
-  else if (action === 'deleteRight') actionStr = 'Right deleted';
+  if (action === 'keepLeft') actionStr = 'Left version kept';
+  else if (action === 'keepRight') actionStr = 'Right version kept';
 
   undoBannerMessage.innerHTML = `Sync completed: <strong>${relativePath}</strong> (${actionStr}).`;
   undoBanner.classList.remove('hidden');
@@ -361,8 +368,8 @@ async function showDiffModal(file) {
     diffTextContainer.classList.add('hidden');
     diffBinaryContainer.classList.remove('hidden');
     
-    binaryLeftHeader.textContent = condensed.left;
-    binaryRightHeader.textContent = condensed.right;
+    binaryLeftHeader.textContent = file.newerSide === 'left' ? `${condensed.left} · New` : file.newerSide === 'right' ? `${condensed.left} · Old` : condensed.left;
+    binaryRightHeader.textContent = file.newerSide === 'right' ? `${condensed.right} · New` : file.newerSide === 'left' ? `${condensed.right} · Old` : condensed.right;
     
     // Set basic metadata
     binaryLeftSize.textContent = file.left ? formatBytes(file.left.size) : 'Absent';
@@ -403,8 +410,13 @@ async function showDiffModal(file) {
     
     const leftHeaderEl = document.getElementById('diff-left-header');
     const rightHeaderEl = document.getElementById('diff-right-header');
-    leftHeaderEl.textContent = `${condensed.left} (Left)`;
-    rightHeaderEl.textContent = `${condensed.right} (Right)`;
+    const leftLabel = file.newerSide === 'left' ? `${condensed.left} · New` : file.newerSide === 'right' ? `${condensed.left} · Old` : condensed.left;
+    const rightLabel = file.newerSide === 'right' ? `${condensed.right} · New` : file.newerSide === 'left' ? `${condensed.right} · Old` : condensed.right;
+    leftHeaderEl.textContent = leftLabel;
+    rightHeaderEl.textContent = rightLabel;
+    leftHeaderEl.className = `diff-pane-header${file.newerSide === 'left' ? ' pane-newer' : file.newerSide === 'right' ? ' pane-older' : ''}`;
+    rightHeaderEl.className = `diff-pane-header${file.newerSide === 'right' ? ' pane-newer' : file.newerSide === 'left' ? ' pane-older' : ''}`;
+
     
     diffLeftCode.innerHTML = 'Loading diff...';
     diffRightCode.innerHTML = 'Loading diff...';
@@ -461,18 +473,22 @@ async function showDiffModal(file) {
   }
   
   // Wire up keep version modal action buttons
-  diffModalKeepLeft.onclick = () => {
-    performSyncAction(relativePath, 'keepLeft');
+  // "Keep New" = keep the newer side; "Keep Old" = keep the older side
+  const keepNewAction = file.newerSide === 'right' ? 'keepRight' : 'keepLeft';
+  const keepOldAction = file.newerSide === 'right' ? 'keepLeft' : 'keepRight';
+
+  diffModalKeepNew.onclick = () => {
+    performSyncAction(relativePath, keepNewAction);
     diffModal.classList.add('hidden');
   };
-  diffModalKeepRight.onclick = () => {
-    performSyncAction(relativePath, 'keepRight');
+  diffModalKeepOld.onclick = () => {
+    performSyncAction(relativePath, keepOldAction);
     diffModal.classList.add('hidden');
   };
-  
-  // Enable or disable buttons depending on existence
-  diffModalKeepLeft.disabled = !file.left;
-  diffModalKeepRight.disabled = !file.right;
+
+  // Enable/disable based on file existence; if no newerSide, "Keep New" maps to keepLeft
+  diffModalKeepNew.disabled = keepNewAction === 'keepLeft' ? !file.left : !file.right;
+  diffModalKeepOld.disabled = keepOldAction === 'keepLeft' ? !file.left : !file.right;
 }
 
 // Simple HTML escaper
@@ -492,6 +508,39 @@ function getFileType(filename) {
     return '.' + parts.pop().toLowerCase();
   }
   return '';
+}
+
+// Helper: Return icon URL for a filename, falling back to blank.svg
+const FILE_ICON_ALIASES = {
+  jpeg: 'jpg', yml: 'yaml', ts: 'ts', tsx: 'jsx',
+  htm: 'html', rb: 'rb', sh: 'sh', bash: 'bash', zsh: 'zsh',
+  bat: 'bat', cmd: 'cmd', ps1: 'ps1', lock: 'lock',
+  log: 'log', conf: 'conf', cfg: 'cfg', ini: 'ini',
+  toml: 'conf', env: 'conf', gitignore: 'gitignore', npmignore: 'npmignore',
+};
+const FILE_ICON_AVAILABLE = new Set([
+  '7z','ai','apk','app','avi','bak','bash','bat','bin','bmp','bz2',
+  'c','cab','cfg','class','cmd','coffee','conf','cpp','crt','cs','css','csv',
+  'db','dbf','deb','dll','dmg','doc','docm','docx','dot','dotx',
+  'editorconfig','eot','eps','epub','exe',
+  'flac','flv','gif','gitattributes','gitignore',
+  'go','gz','h','hbs','htm','html','ico','img','ini','iso',
+  'jar','java','jpeg','jpg','js','json','jsx','key',
+  'less','lock','log','lua',
+  'm4a','md','mdb','mid','mkv','mov','mp3','mp4','msi',
+  'npmignore','odt','ogg','otf','pdf','pem','php','pkg','pl','png','po',
+  'ppt','pptm','pptx','ps','ps1','psd','pub','py','pyc',
+  'rar','rb','rss','rtf','sass','scss','sh','sln','sql','sqlite','svg',
+  'tar','tex','tgz','tif','tiff','tmp','torrent','ts','tsv','ttf','txt',
+  'vb','vbs','vsd','war','wav','webm','webp','wma','wmv','woff','woff2',
+  'xls','xlsm','xlsx','xml','xsd','yaml','yml','zip','zsh',
+]);
+function getFileIconUrl(filename) {
+  const parts = filename.split('.');
+  const raw = parts.length > 1 ? parts.pop().toLowerCase() : '';
+  const ext = FILE_ICON_ALIASES[raw] || raw;
+  const name = FILE_ICON_AVAILABLE.has(ext) ? ext : 'blank';
+  return `/icons/${name}.svg`;
 }
 
 // Update filter counts badge numbers
@@ -630,7 +679,8 @@ function renderGrid() {
     if (!isParentCollapsed && !collapsedFolders.has(folderPath)) {
       directoryGroups[folderPath].forEach(file => {
         const row = document.createElement('div');
-        row.className = `grid-row status-${file.status}`;
+        const newerClass = file.status === 'modified' && file.newerSide ? ` newer-${file.newerSide}` : '';
+        row.className = `grid-row status-${file.status}${newerClass}`;
 
         // Indent subfolder files
         const depth = folderPath === '' ? 0 : folderPath.split('/').length;
@@ -640,19 +690,24 @@ function renderGrid() {
         const filenameCell = document.createElement('div');
         filenameCell.className = 'grid-cell col-filename';
         const displayFile = file.left || file.right;
+        const diffBtnHtml = file.status === 'modified'
+          ? `<button class="icon-btn grid-action-btn btn-view-diff filename-diff-btn" data-action="viewDiff" data-path="${file.relativePath}" title="View Diff"><span class="material-symbols-outlined">difference</span></button>`
+          : '';
+        const iconUrl = getFileIconUrl(file.name);
         if (displayFile) {
           filenameCell.innerHTML = `
             <div class="file-cell">
               ${indentHtml}
-              <span class="material-symbols-outlined file-icon">description</span>
+              <img class="file-type-icon" src="${iconUrl}" alt="" aria-hidden="true">
               <span class="file-name" title="${file.relativePath}">${file.name}</span>
+              ${diffBtnHtml}
             </div>
           `;
         } else {
           filenameCell.innerHTML = `
             <div class="file-cell ghost-placeholder">
               ${indentHtml}
-              <span class="material-symbols-outlined file-icon">description</span>
+              <img class="file-type-icon" src="/icons/blank.svg" alt="" aria-hidden="true">
               <span class="file-name">(Unknown)</span>
             </div>
           `;
@@ -671,11 +726,11 @@ function renderGrid() {
         statusCell.innerHTML = getStatusCellHtml(file);
         row.appendChild(statusCell);
 
-        // 4. Actions Cell (consolidated)
-        const actionsCell = document.createElement('div');
-        actionsCell.className = 'grid-cell col-actions';
-        actionsCell.innerHTML = getActionsCellHtml(file);
-        row.appendChild(actionsCell);
+        // 4. Left Action
+        const leftActionCell = document.createElement('div');
+        leftActionCell.className = 'grid-cell col-left-action';
+        leftActionCell.innerHTML = getLeftActionHtml(file);
+        row.appendChild(leftActionCell);
 
         // 5. Left Date
         const leftDateCell = document.createElement('div');
@@ -698,7 +753,13 @@ function renderGrid() {
         }
         row.appendChild(leftSizeCell);
 
-        // 7. Right Date
+        // 7. Right Action
+        const rightActionCell = document.createElement('div');
+        rightActionCell.className = 'grid-cell col-right-action';
+        rightActionCell.innerHTML = getRightActionHtml(file);
+        row.appendChild(rightActionCell);
+
+        // 8. Right Date
         const rightDateCell = document.createElement('div');
         rightDateCell.className = 'grid-cell col-right-date';
         if (file.right) {
@@ -709,7 +770,7 @@ function renderGrid() {
         }
         row.appendChild(rightDateCell);
 
-        // 8. Right Size
+        // 9. Right Size
         const rightSizeCell = document.createElement('div');
         rightSizeCell.className = 'grid-cell col-right-size';
         if (file.right) {
@@ -755,40 +816,43 @@ function getStatusCellHtml(file) {
   return '';
 }
 
-// Helper: Build consolidated Actions HTML
-function getActionsCellHtml(file) {
+// Helper: Left action cell HTML
+function getLeftActionHtml(file) {
   if (file.status === 'left-only') {
-    return `
-      <button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Copy to Right">
-        <span class="material-symbols-outlined">arrow_forward</span>
-      </button>
-      <button class="icon-btn grid-action-btn btn-delete" data-action="deleteLeft" data-path="${file.relativePath}" title="Delete from Left">
-        <span class="material-symbols-outlined">delete</span>
-      </button>
-    `;
-  }
-  if (file.status === 'right-only') {
-    return `
-      <button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Copy to Left">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <button class="icon-btn grid-action-btn btn-delete" data-action="deleteRight" data-path="${file.relativePath}" title="Delete from Right">
-        <span class="material-symbols-outlined">delete</span>
-      </button>
-    `;
+    return `<button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Copy to Right folder"><span class="material-symbols-outlined">arrow_forward</span></button>`;
   }
   if (file.status === 'modified') {
-    return `
-      <button class="icon-btn grid-action-btn btn-sync-right" data-action="keepLeft" data-path="${file.relativePath}" title="Keep Left (overwrite Right)">
-        <span class="material-symbols-outlined">arrow_forward</span>
-      </button>
-      <button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Keep Right (overwrite Left)">
-        <span class="material-symbols-outlined">arrow_back</span>
-      </button>
-      <button class="icon-btn grid-action-btn btn-view-diff" data-action="viewDiff" data-path="${file.relativePath}" title="View Diff">
-        <span class="material-symbols-outlined">difference</span>
-      </button>
-    `;
+    const newerSide = file.newerSide;
+    const isLeftNewer = newerSide === 'left' || !newerSide;
+    const action = isLeftNewer ? 'keepLeft' : 'keepLeft';
+    const label = isLeftNewer ? 'Keep New' : 'Keep Old';
+    const btnClass = isLeftNewer ? 'btn-keep-new' : 'btn-keep-old';
+    const title = newerSide === 'left'
+      ? `Keep Left (newer by ${file.timeDiffStr})`
+      : newerSide === 'right'
+        ? `Keep Left (older by ${file.timeDiffStr})`
+        : 'Keep Left version';
+    return `<button class="text-action-btn ${btnClass}" data-action="keepLeft" data-path="${file.relativePath}" title="${title}">${label}</button>`;
+  }
+  return '';
+}
+
+// Helper: Right action cell HTML
+function getRightActionHtml(file) {
+  if (file.status === 'right-only') {
+    return `<button class="icon-btn grid-action-btn btn-sync-left" data-action="keepRight" data-path="${file.relativePath}" title="Copy to Left folder"><span class="material-symbols-outlined">arrow_back</span></button>`;
+  }
+  if (file.status === 'modified') {
+    const newerSide = file.newerSide;
+    const isRightNewer = newerSide === 'right';
+    const label = isRightNewer ? 'Keep New' : 'Keep Old';
+    const btnClass = isRightNewer ? 'btn-keep-new' : 'btn-keep-old';
+    const title = newerSide === 'right'
+      ? `Keep Right (newer by ${file.timeDiffStr})`
+      : newerSide === 'left'
+        ? `Keep Right (older by ${file.timeDiffStr})`
+        : 'Keep Right version';
+    return `<button class="text-action-btn ${btnClass}" data-action="keepRight" data-path="${file.relativePath}" title="${title}">${label}</button>`;
   }
   return '';
 }
@@ -812,7 +876,7 @@ filterTabs.forEach(tab => {
 
 // Event Delegation for Grid Action buttons
 gridBody.addEventListener('click', (e) => {
-  const button = e.target.closest('.grid-action-btn');
+  const button = e.target.closest('.grid-action-btn, .text-action-btn');
   if (!button) return;
 
   const action = button.getAttribute('data-action');
@@ -825,12 +889,6 @@ gridBody.addEventListener('click', (e) => {
   if (action === 'viewDiff') {
     showDiffModal(fileObj);
   } else {
-    // Confirm deletes for safety, keep syncs seamless
-    if (action.startsWith('delete')) {
-      if (!confirm(`Are you sure you want to delete ${relativePath} from the ${action === 'deleteLeft' ? 'Left' : 'Right'} folder?`)) {
-        return;
-      }
-    }
     performSyncAction(relativePath, action);
   }
 });
@@ -876,67 +934,59 @@ document.addEventListener('DOMContentLoaded', () => {
   if (cachedLeft) leftPathInput.value = cachedLeft;
   if (cachedRight) rightPathInput.value = cachedRight;
 
-  // Initialize resizable columns behavior
+  // Clear any previously persisted column widths — columns always reset to defaults
+  localStorage.removeItem('comparer_col_widths');
+  localStorage.removeItem('comparer_col_widths_ver');
+
   initResizableColumns();
 });
+
+// Per-column min/max constraints (px). Filename max keeps fixed cols always visible.
+// Fixed cols total = 785px; app content = 1408px; filename max = 1408 - 785 = 623px.
+const COL_CONSTRAINTS = {
+  filename:      { min: 160, max: 623 },
+  type:          { min: 40,  max: 100 },
+  status:        { min: 80,  max: 180 },
+  'left-action':  { min: 60,  max: 140 },
+  'left-date':    { min: 100, max: 200 },
+  'left-size':    { min: 55,  max: 130 },
+  'right-action': { min: 60,  max: 140 },
+  'right-date':   { min: 100, max: 200 },
+  'right-size':   { min: 55,  max: 130 },
+};
 
 // Resizable Columns Logic
 function initResizableColumns() {
   const gridPanel = document.querySelector('.grid-panel');
   const headers = document.querySelectorAll('.header-col');
-  
-  // Load saved column widths from localStorage
-  const savedWidths = localStorage.getItem('comparer_col_widths');
-  if (savedWidths) {
-    try {
-      const widths = JSON.parse(savedWidths);
-      Object.keys(widths).forEach(col => {
-        gridPanel.style.setProperty(`--col-width-${col}`, widths[col]);
-      });
-    } catch (e) {
-      console.error('Error loading column widths:', e);
-    }
-  }
 
   headers.forEach(header => {
     const handle = header.querySelector('.resize-handle');
     if (!handle) return;
 
     const colName = handle.getAttribute('data-col');
+    const constraints = COL_CONSTRAINTS[colName] || { min: 50, max: 800 };
 
     handle.addEventListener('mousedown', (e) => {
       e.preventDefault();
-      
+
       handle.classList.add('active');
       document.body.style.cursor = 'col-resize';
-      
+
       const startX = e.clientX;
       const startWidth = header.getBoundingClientRect().width;
 
       const onMouseMove = (moveEvent) => {
         const dx = moveEvent.clientX - startX;
-        const newWidth = Math.max(50, startWidth + dx); // Enforce min width of 50px
-        
+        const newWidth = Math.min(constraints.max, Math.max(constraints.min, startWidth + dx));
         gridPanel.style.setProperty(`--col-width-${colName}`, `${newWidth}px`);
       };
 
       const onMouseUp = () => {
         handle.classList.remove('active');
         document.body.style.cursor = '';
-        
         document.removeEventListener('mousemove', onMouseMove);
         document.removeEventListener('mouseup', onMouseUp);
-
-        // Save widths to localStorage
-        const currentWidths = {};
-        const colNames = ['filename', 'type', 'status', 'actions', 'left-date', 'left-size', 'right-date', 'right-size'];
-        colNames.forEach(col => {
-          const val = gridPanel.style.getPropertyValue(`--col-width-${col}`);
-          if (val) {
-            currentWidths[col] = val.trim();
-          }
-        });
-        localStorage.setItem('comparer_col_widths', JSON.stringify(currentWidths));
       };
 
       document.addEventListener('mousemove', onMouseMove);
