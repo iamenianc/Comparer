@@ -1,0 +1,5 @@
+This is a shared file.
+This version was modified earlier.
+Line 1: Normal content.
+Line 2: Left modified line.
+Line 3: Muted text.

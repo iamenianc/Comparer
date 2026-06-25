@@ -1,0 +1,28 @@
+{
+  "name": "foldercompare",
+  "version": "1.0.0",
+  "description": "Folder comparison tool optimized for Windows 11 Enterprise.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamenianc/Comparer.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/iamenianc/Comparer/issues"
+  },
+  "homepage": "https://github.com/iamenianc/Comparer#readme",
+  "dependencies": {
+    "chokidar": "^5.0.0",
+    "diff": "^9.0.0",
+    "express": "^5.2.1",
+    "mime-types": "^3.0.2"
+  }
+}

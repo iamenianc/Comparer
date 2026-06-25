@@ -1,0 +1,2 @@
+This file exists only in the RIGHT folder.
+It should be identified as unique to the right side (Google Red tag).

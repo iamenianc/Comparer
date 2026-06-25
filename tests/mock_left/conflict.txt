@@ -1,0 +1,3 @@
+Conflict Test
+This is the LEFT side version of this file.
+It contains left-specific changes.
