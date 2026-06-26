@@ -1786,3 +1786,191 @@ body {
   background-color: var(--google-gray-surface);
 }
 
+
+/* ===========================================================================
+   Phase 4: Summary Bar, Column Sort, Ignore Test, Sessions backend badge
+   =========================================================================== */
+
+/* --- Summary Bar (chip strip + proportional color bar) --- */
+.summary-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 16px;
+  background-color: var(--google-gray-surface);
+  border-bottom: 1px solid var(--google-gray-border);
+}
+
+.summary-bar.hidden {
+  display: none;
+}
+
+.summary-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.summary-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--google-gray-border);
+  border-radius: 12px;
+  background-color: var(--google-gray-bg);
+  font-size: 11px;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.summary-chip:hover {
+  background-color: var(--google-gray-element);
+  color: var(--text-primary);
+}
+
+.summary-chip.active {
+  background-color: var(--google-blue-light);
+  border-color: var(--google-blue);
+  color: var(--google-blue);
+}
+
+.summary-chip-count {
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 14px;
+  text-align: center;
+  padding: 0 4px;
+  border-radius: 7px;
+  background-color: var(--google-gray-element);
+  color: var(--text-secondary);
+}
+
+.summary-chip.active .summary-chip-count {
+  background-color: var(--google-blue);
+  color: #fff;
+}
+
+.summary-proportional-bar {
+  display: flex;
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background-color: var(--google-gray-element);
+}
+
+.summary-seg {
+  height: 100%;
+  min-width: 0;
+  transition: flex-grow 0.2s ease;
+}
+.summary-seg.seg-modified  { background-color: var(--color-modified); }
+.summary-seg.seg-left      { background-color: var(--color-left-only); }
+.summary-seg.seg-right     { background-color: var(--color-right-only); }
+.summary-seg.seg-identical { background-color: var(--color-identical); }
+
+/* --- Sortable column headers --- */
+.header-col.sortable {
+  cursor: pointer;
+}
+
+.header-col.sortable:hover {
+  background-color: var(--google-gray-element);
+}
+
+.header-col .sort-caret {
+  font-size: 14px !important;
+  flex: 0 0 auto;
+  width: 14px;
+  color: var(--google-blue);
+}
+
+.header-col.sort-active {
+  color: var(--google-blue);
+}
+
+/* --- Ignore-pattern test results (inline in Exclusions panel) --- */
+.exclusion-test-results {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--google-gray-border);
+  border-radius: 5px;
+  background-color: var(--google-gray-bg);
+}
+
+.exclusion-test-results.hidden {
+  display: none;
+}
+
+.exclusion-test-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.exclusion-test-hint {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.exclusion-test-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.exclusion-test-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.exclusion-test-side {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-weight: 700;
+  border-radius: 3px;
+}
+.exclusion-test-side.side-left  { color: var(--color-left-only); background-color: var(--bg-left-only); }
+.exclusion-test-side.side-right { color: var(--color-right-only); background-color: var(--bg-right-only); }
+
+.exclusion-test-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Sessions backend badge (Team disk / Local browser) --- */
+.sessions-backend-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  vertical-align: middle;
+}
+.sessions-backend-badge.badge-disk {
+  background-color: #e6f4ea;
+  color: #137333;
+}
+.sessions-backend-badge.badge-local {
+  background-color: var(--google-gray-element);
+  color: var(--text-secondary);
+}

@@ -53,6 +53,10 @@
             <span class="material-symbols-outlined">bookmarks</span>
             <span>Sessions</span>
           </button>
+          <button id="export-csv-btn" class="header-tool-btn" title="Export full scan results as CSV" disabled>
+            <span class="material-symbols-outlined">table_view</span>
+            <span>Export CSV</span>
+          </button>
         </div>
 
         <span class="version-badge">v1.0.0</span>
@@ -104,25 +108,65 @@
               <span>Right Only</span>
               <span class="tab-count" id="count-right">0</span>
             </button>
+            <button class="filter-tab" data-filter="identical">
+              <span class="indicator-dot dot-identical"></span>
+              <span>Identical</span>
+              <span class="tab-count" id="count-identical">0</span>
+            </button>
           </div>
         </div>
       </div>
     </header>
 
+    <!-- Summary Bar: live counts + proportional color bar. Clickable chips are
+         shortcuts to the matching filter and stay in sync with the filter tabs. -->
+    <div class="summary-bar hidden" id="summary-bar">
+      <div class="summary-chips">
+        <button class="summary-chip" data-filter="modified" title="Show modified files">
+          <span class="indicator-dot dot-modified"></span>
+          <span class="summary-chip-label">Modified</span>
+          <span class="summary-chip-count" id="summary-count-modified">0</span>
+        </button>
+        <button class="summary-chip" data-filter="left" title="Show left-only files">
+          <span class="indicator-dot dot-left"></span>
+          <span class="summary-chip-label">Left Only</span>
+          <span class="summary-chip-count" id="summary-count-left">0</span>
+        </button>
+        <button class="summary-chip" data-filter="right" title="Show right-only files">
+          <span class="indicator-dot dot-right"></span>
+          <span class="summary-chip-label">Right Only</span>
+          <span class="summary-chip-count" id="summary-count-right">0</span>
+        </button>
+        <button class="summary-chip" data-filter="identical" title="Show identical files">
+          <span class="indicator-dot dot-identical"></span>
+          <span class="summary-chip-label">Identical</span>
+          <span class="summary-chip-count" id="summary-count-identical">0</span>
+        </button>
+      </div>
+      <div class="summary-proportional-bar" id="summary-proportional-bar" title="Proportional breakdown">
+        <div class="summary-seg seg-modified" id="summary-seg-modified"></div>
+        <div class="summary-seg seg-left" id="summary-seg-left"></div>
+        <div class="summary-seg seg-right" id="summary-seg-right"></div>
+        <div class="summary-seg seg-identical" id="summary-seg-identical"></div>
+      </div>
+    </div>
+
     <!-- Directory Comparison Grid -->
     <main class="grid-panel">
       <div class="grid-scroll-container">
         <div class="grid-header">
-          <div class="header-col col-filename header-span-rows">
+          <div class="header-col col-filename header-span-rows sortable" data-sort="filename">
             <span>Filename</span>
+            <span class="sort-caret material-symbols-outlined"></span>
             <div class="resize-handle" data-col="filename"></div>
           </div>
           <div class="header-col col-type header-span-rows">
             <span>Type</span>
             <div class="resize-handle" data-col="type"></div>
           </div>
-          <div class="header-col col-status header-span-rows">
+          <div class="header-col col-status header-span-rows sortable" data-sort="status">
             <span>Status</span>
+            <span class="sort-caret material-symbols-outlined"></span>
             <div class="resize-handle" data-col="status"></div>
           </div>
           <div class="header-super-col" id="super-header-left">
@@ -131,24 +175,28 @@
           <div class="header-super-col" id="super-header-right">
             <span>Right Folder</span>
           </div>
-          <div class="header-col header-sub col-left-date">
+          <div class="header-col header-sub col-left-date sortable" data-sort="left-date">
             <span>Date</span>
+            <span class="sort-caret material-symbols-outlined"></span>
             <div class="resize-handle" data-col="left-date"></div>
           </div>
-          <div class="header-col header-sub col-left-size">
+          <div class="header-col header-sub col-left-size sortable" data-sort="left-size">
             <span>Size</span>
+            <span class="sort-caret material-symbols-outlined"></span>
             <div class="resize-handle" data-col="left-size"></div>
           </div>
           <div class="header-col header-sub col-left-action">
             <span></span>
             <div class="resize-handle" data-col="left-action"></div>
           </div>
-          <div class="header-col header-sub col-right-date">
+          <div class="header-col header-sub col-right-date sortable" data-sort="right-date">
             <span>Date</span>
+            <span class="sort-caret material-symbols-outlined"></span>
             <div class="resize-handle" data-col="right-date"></div>
           </div>
-          <div class="header-col header-sub col-right-size">
+          <div class="header-col header-sub col-right-size sortable" data-sort="right-size">
             <span>Size</span>
+            <span class="sort-caret material-symbols-outlined"></span>
             <div class="resize-handle" data-col="right-size"></div>
           </div>
           <div class="header-col header-sub col-right-action">
@@ -303,7 +351,7 @@
         <div class="side-panel-title-group">
           <span class="material-symbols-outlined side-panel-icon">bookmarks</span>
           <div>
-            <h3>Sessions</h3>
+            <h3>Sessions <span class="sessions-backend-badge badge-local" id="sessions-backend-badge">Local (browser)</span></h3>
             <span class="side-panel-subtitle">Saved comparison setups</span>
           </div>
         </div>

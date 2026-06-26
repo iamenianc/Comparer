@@ -720,6 +720,92 @@ app.post('/api/undo', (req, res) => {
   }
 });
 
+// API Route: Test a single ignore glob against the current scan paths.
+// Walks both trees with NO ignore filtering, then returns every file the given
+// pattern *would* exclude. Read-only: no watchers, no backups, no mutation — it
+// just previews the effect of a pattern so users can vet it before scanning.
+app.post('/api/ignore-test', (req, res) => {
+  const { leftPath, rightPath, recursive = true, pattern } = req.body;
+
+  if (!pattern || typeof pattern !== 'string' || !pattern.trim()) {
+    return res.status(400).json({ error: 'A non-empty pattern is required.' });
+  }
+  if (!leftPath || !rightPath) {
+    return res.status(400).json({ error: 'Both leftPath and rightPath are required.' });
+  }
+
+  const compiled = compileGlobs([pattern.trim()]);
+  const MAX_MATCHES = 500;
+  const matches = [];
+  let total = 0;
+
+  // Walk one side with no ignores and collect entries the pattern matches.
+  const collect = (rootPath, side) => {
+    const resolved = path.resolve(rootPath);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return;
+    const entries = scanDirectory(resolved, recursive, resolved, []);
+    for (const relativePath of Object.keys(entries)) {
+      if (isIgnored(relativePath, compiled)) {
+        total++;
+        if (matches.length < MAX_MATCHES) matches.push({ side, relativePath });
+      }
+    }
+  };
+
+  try {
+    collect(leftPath, 'left');
+    collect(rightPath, 'right');
+    res.json({
+      pattern: pattern.trim(),
+      count: total,
+      matches,
+      truncated: total > matches.length,
+    });
+  } catch (error) {
+    console.error('Ignore-test error:', error);
+    res.status(500).json({ error: `Failed to test pattern: ${error.message}` });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Team sessions (disk-backed). Saved alongside the project so anyone running
+// `npm start` from the same directory sees the same list. The frontend treats
+// this as the primary store and transparently falls back to localStorage if the
+// API is unreachable.
+// ---------------------------------------------------------------------------
+const SESSIONS_DIR = path.join(process.cwd(), '.comparer');
+const SESSIONS_FILE = path.join(SESSIONS_DIR, 'sessions.json');
+
+// API Route: read the shared session list (empty array if the file is absent).
+app.get('/api/sessions', (req, res) => {
+  try {
+    if (!fs.existsSync(SESSIONS_FILE)) return res.json({ sessions: [] });
+    const raw = fs.readFileSync(SESSIONS_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    res.json({ sessions: Array.isArray(parsed) ? parsed : [] });
+  } catch (error) {
+    console.error('Failed to read sessions file:', error);
+    res.status(500).json({ error: `Failed to read sessions: ${error.message}` });
+  }
+});
+
+// API Route: overwrite the shared session list with the posted array. The client
+// owns the full list (load-all / mutate / save-all), keeping this route trivial.
+app.post('/api/sessions', (req, res) => {
+  const { sessions } = req.body;
+  if (!Array.isArray(sessions)) {
+    return res.status(400).json({ error: 'sessions must be an array.' });
+  }
+  try {
+    fs.mkdirSync(SESSIONS_DIR, { recursive: true });
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessions, null, 2), 'utf8');
+    res.json({ success: true, count: sessions.length });
+  } catch (error) {
+    console.error('Failed to write sessions file:', error);
+    res.status(500).json({ error: `Failed to save sessions: ${error.message}` });
+  }
+});
+
 // API Route: SSE Watcher
 app.get('/api/watch', (req, res) => {
   res.writeHead(200, {

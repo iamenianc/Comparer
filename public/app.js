@@ -43,6 +43,7 @@ const countDiff = document.getElementById('count-diff');
 const countModified = document.getElementById('count-modified');
 const countLeft = document.getElementById('count-left');
 const countRight = document.getElementById('count-right');
+const countIdentical = document.getElementById('count-identical');
 const statusText = document.getElementById('status-text');
 const summaryText = document.getElementById('scan-summary-text');
 
@@ -185,6 +186,7 @@ async function runScan() {
     setupSSEWatcher();
     setStatusLight('done');
     statusText.textContent = 'Scan Completed';
+    if (exportCsvBtn) exportCsvBtn.disabled = false;
 
     // File-pair mode: the user pointed at two files directly — auto-open the
     // side-by-side diff for the single synthesized row.
@@ -203,6 +205,7 @@ async function runScan() {
     `;
     statusText.textContent = 'Scan Failed';
     summaryText.textContent = 'Error occurred during scan';
+    if (exportCsvBtn) exportCsvBtn.disabled = true;
   } finally {
     scanBtn.disabled = false;
     scanBtn.querySelector('span:last-child').textContent = 'Compare';
@@ -474,6 +477,11 @@ async function exportDiffHtml(win, wd, file) {
   const title = `Diff: ${file.name}${file.rightName && file.rightName !== file.name ? ' ↔ ' + file.rightName : ''}`;
   const generated = new Date().toLocaleString();
 
+  // Resolve the absolute left/right paths for the metadata header. File-pair mode
+  // carries explicit paths; folder mode joins the scan roots with the relativePath.
+  const leftFull = file.leftFile || (scanResult ? `${scanResult.leftPath}/${file.relativePath}` : '');
+  const rightFull = file.rightFile || (scanResult ? `${scanResult.rightPath}/${file.relativePath}` : '');
+
   const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -486,9 +494,19 @@ ${cssInline}
 .diff-code { overflow: visible !important; height: auto !important; }
 .export-meta { padding: 6px 16px; font-size: 11px; color: var(--text-secondary);
   border-bottom: 1px solid var(--google-gray-border); background: var(--google-gray-surface); }
+.export-meta-header { padding: 10px 16px; font-size: 12px; color: var(--text-secondary);
+  border-bottom: 1px solid var(--google-gray-border); background: var(--google-gray-surface);
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+.export-meta-header .label { font-weight: 600; color: var(--text-primary); }
+.export-meta-header .val { font-family: var(--font-mono); word-break: break-all; }
 </style>
 </head>
 <body>
+<div class="export-meta-header">
+  <span class="label">Left path</span><span class="val">${escapeHtml(leftFull)}</span>
+  <span class="label">Right path</span><span class="val">${escapeHtml(rightFull)}</span>
+  <span class="label">Exported</span><span class="val">${escapeHtml(generated)}</span>
+</div>
 ${body.innerHTML}
 <div class="export-meta">Generated ${escapeHtml(generated)} · FolderCompare</div>
 </body>
@@ -1102,8 +1120,39 @@ function updateTabCounts() {
   countModified.textContent = modified;
   countLeft.textContent = left;
   countRight.textContent = right;
+  if (countIdentical) countIdentical.textContent = match;
 
   summaryText.textContent = `Scanned ${all} files | ${diff} Differences | ${match} Matches`;
+
+  updateSummaryBar({ modified, left, right, identical: match });
+}
+
+// --- Summary Bar -----------------------------------------------------------
+// Live counts for the four statuses plus a proportional color bar. Driven from
+// the same counts as the filter tabs so the two never drift.
+const summaryBar = document.getElementById('summary-bar');
+const summaryEls = {
+  modified: { count: document.getElementById('summary-count-modified'), seg: document.getElementById('summary-seg-modified') },
+  left:     { count: document.getElementById('summary-count-left'),     seg: document.getElementById('summary-seg-left') },
+  right:    { count: document.getElementById('summary-count-right'),    seg: document.getElementById('summary-seg-right') },
+  identical:{ count: document.getElementById('summary-count-identical'),seg: document.getElementById('summary-seg-identical') },
+};
+
+function updateSummaryBar(counts) {
+  if (!summaryBar) return;
+  const total = counts.modified + counts.left + counts.right + counts.identical;
+  // Hide the whole bar when there's nothing to show.
+  summaryBar.classList.toggle('hidden', total === 0);
+  for (const key of Object.keys(summaryEls)) {
+    const n = counts[key] || 0;
+    const { count, seg } = summaryEls[key];
+    if (count) count.textContent = n;
+    if (seg) {
+      // Zero-count segments collapse so the bar stays clean.
+      seg.style.flexGrow = String(n);
+      seg.style.display = n === 0 ? 'none' : '';
+    }
+  }
 }
 
 // Group files by parent directories to build folder rows
@@ -1123,9 +1172,248 @@ function groupFilesByDirectory(files) {
   return groups;
 }
 
+// --- Column sort state -----------------------------------------------------
+// Tri-state per column: asc -> desc -> original (col=null). Persisted so the
+// chosen order survives reloads. Default is Status/asc so diffs float to the top.
+const SORT_STORAGE_KEY = 'comparer_sort';
+// Rank used when sorting by Status — lower ranks (diffs) sort first in asc.
+const STATUS_RANK = { 'modified': 0, 'left-only': 1, 'right-only': 2, 'identical': 3 };
+
+function loadSortState() {
+  try {
+    const raw = localStorage.getItem(SORT_STORAGE_KEY);
+    if (raw) {
+      const p = JSON.parse(raw);
+      const colOk = p.col === null || typeof p.col === 'string';
+      if (p && colOk && (p.dir === 'asc' || p.dir === 'desc')) return { col: p.col, dir: p.dir };
+    }
+  } catch (e) { /* fall through to default */ }
+  return { col: 'status', dir: 'asc' };
+}
+let sortState = loadSortState();
+
+function saveSortState() {
+  localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(sortState));
+}
+
+// Extract the comparable key for a file under a given column.
+function sortKey(file, col) {
+  switch (col) {
+    case 'status':     return STATUS_RANK[file.status] ?? 99;
+    case 'left-date':  return file.left ? file.left.mtimeMs : -Infinity;
+    case 'left-size':  return file.left ? file.left.size : -Infinity;
+    case 'right-date': return file.right ? file.right.mtimeMs : -Infinity;
+    case 'right-size': return file.right ? file.right.size : -Infinity;
+    case 'filename':
+    default:           return file.relativePath.toLowerCase();
+  }
+}
+
+// Return a new array sorted by the given column/direction, with relativePath as
+// a stable tiebreaker so equal keys keep a deterministic order.
+function getSortedFiles(files, col, dir) {
+  const sorted = [...files].sort((a, b) => {
+    const ka = sortKey(a, col), kb = sortKey(b, col);
+    let cmp;
+    if (typeof ka === 'number' && typeof kb === 'number') cmp = ka - kb;
+    else cmp = String(ka).localeCompare(String(kb));
+    if (cmp === 0) cmp = a.relativePath.localeCompare(b.relativePath);
+    return dir === 'desc' ? -cmp : cmp;
+  });
+  return sorted;
+}
+
+// Reflect the active sort on the header carets.
+function updateSortIndicators() {
+  document.querySelectorAll('.header-col.sortable').forEach((h) => {
+    const col = h.getAttribute('data-sort');
+    const caret = h.querySelector('.sort-caret');
+    const active = sortState.col === col;
+    h.classList.toggle('sort-active', active);
+    if (caret) caret.textContent = active ? (sortState.dir === 'asc' ? 'arrow_upward' : 'arrow_downward') : '';
+  });
+}
+
+// Cycle a column through asc -> desc -> original on each header click.
+function cycleSort(col) {
+  if (sortState.col !== col) {
+    sortState = { col, dir: 'asc' };
+  } else if (sortState.dir === 'asc') {
+    sortState = { col, dir: 'desc' };
+  } else {
+    sortState = { col: null, dir: 'asc' }; // back to original (folder-grouped)
+  }
+  saveSortState();
+  updateSortIndicators();
+  if (scanResult) renderGrid();
+}
+
+function initSortableHeaders() {
+  document.querySelectorAll('.header-col.sortable').forEach((header) => {
+    header.addEventListener('click', (e) => {
+      // Ignore clicks that start on the resize grip — that's a resize, not a sort.
+      if (e.target.closest('.resize-handle')) return;
+      cycleSort(header.getAttribute('data-sort'));
+    });
+  });
+  updateSortIndicators();
+}
+
+// Build a single file row. `depth` controls indentation; `showFullPath` shows the
+// full relativePath in the filename cell (used in flat/sorted views where there
+// are no folder rows to provide context).
+function buildFileRow(file, depth, showFullPath) {
+  const row = document.createElement('div');
+  const newerClass = file.status === 'modified' && file.newerSide ? ` newer-${file.newerSide}` : '';
+  row.className = `grid-row status-${file.status}${newerClass}`;
+
+  const indentHtml = `<span class="file-indent" style="width: ${depth * 10}px"></span>`;
+
+  // 1. Filename Cell
+  const filenameCell = document.createElement('div');
+  filenameCell.className = 'grid-cell col-filename';
+  const displayFile = file.left || file.right;
+  // Show the diff button for modified files, and for any file-pair row
+  // (two explicit files) regardless of status so it can be re-opened.
+  const isFilePair = !!(file.leftFile || file.rightFile);
+  const diffBtnHtml = (file.status === 'modified' || isFilePair)
+    ? `<button class="icon-btn grid-action-btn btn-view-diff filename-diff-btn" data-action="viewDiff" data-path="${file.relativePath}" title="View Diff"><span class="material-symbols-outlined">difference</span></button>`
+    : '';
+  const iconUrl = getFileIconUrl(file.name);
+  // When two paired files have different names, show "left ↔ right". In flat
+  // views show the full relativePath so the folder context isn't lost.
+  const nameLabel = (isFilePair && file.rightName && file.rightName !== file.name)
+    ? `${file.name} ↔ ${file.rightName}`
+    : (showFullPath ? file.relativePath : file.name);
+  if (displayFile) {
+    filenameCell.innerHTML = `
+      <div class="file-cell">
+        ${indentHtml}
+        <img class="file-type-icon" src="${iconUrl}" alt="" aria-hidden="true">
+        <span class="file-name" title="${file.relativePath}">${nameLabel}</span>
+        ${diffBtnHtml}
+      </div>
+    `;
+  } else {
+    filenameCell.innerHTML = `
+      <div class="file-cell ghost-placeholder">
+        ${indentHtml}
+        <img class="file-type-icon" src="/icons/blank.svg" alt="" aria-hidden="true">
+        <span class="file-name">(Unknown)</span>
+      </div>
+    `;
+  }
+  row.appendChild(filenameCell);
+
+  // 2. Type Cell
+  const typeCell = document.createElement('div');
+  typeCell.className = 'grid-cell col-type';
+  typeCell.textContent = getFileType(file.name);
+  row.appendChild(typeCell);
+
+  // 3. Status Cell
+  const statusCell = document.createElement('div');
+  statusCell.className = 'grid-cell col-status';
+  statusCell.innerHTML = getStatusCellHtml(file);
+  row.appendChild(statusCell);
+
+  // 4. Left Date
+  const leftDateCell = document.createElement('div');
+  leftDateCell.className = 'grid-cell col-left-date';
+  if (file.left) {
+    const leftCompareMtime = file.status === 'modified' ? file.right?.mtime : null;
+    const leftDateStr = formatDate(file.left.mtime, leftCompareMtime);
+    if (file.status === 'modified' && file.newerSide === 'left' && file.timeDiffStr) {
+      leftDateCell.innerHTML = `<span class="newer-indicator" title="Left is newer by ${file.timeDiffStr}">◄ ${file.timeDiffStr}</span><span class="date-text">${leftDateStr}</span>`;
+    } else {
+      leftDateCell.innerHTML = `<span class="date-text">${leftDateStr}</span>`;
+    }
+    leftDateCell.title = file.left.mtime;
+  } else {
+    leftDateCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
+  }
+  row.appendChild(leftDateCell);
+
+  // 5. Left Size
+  const leftSizeCell = document.createElement('div');
+  leftSizeCell.className = 'grid-cell col-left-size';
+  if (file.left) {
+    leftSizeCell.textContent = formatBytes(file.left.size);
+  } else {
+    leftSizeCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
+  }
+  row.appendChild(leftSizeCell);
+
+  // 6. Left Action
+  const leftActionCell = document.createElement('div');
+  leftActionCell.className = 'grid-cell col-left-action';
+  leftActionCell.innerHTML = getLeftActionHtml(file);
+  row.appendChild(leftActionCell);
+
+  // 7. Right Date
+  const rightDateCell = document.createElement('div');
+  rightDateCell.className = 'grid-cell col-right-date';
+  if (file.right) {
+    const rightCompareMtime = file.status === 'modified' ? file.left?.mtime : null;
+    const rightDateStr = formatDate(file.right.mtime, rightCompareMtime);
+    if (file.status === 'modified' && file.newerSide === 'right' && file.timeDiffStr) {
+      rightDateCell.innerHTML = `<span class="newer-indicator right-side-newer" title="Right is newer by ${file.timeDiffStr}">► ${file.timeDiffStr}</span><span class="date-text">${rightDateStr}</span>`;
+    } else {
+      rightDateCell.innerHTML = `<span class="date-text">${rightDateStr}</span>`;
+    }
+    rightDateCell.title = file.right.mtime;
+  } else {
+    rightDateCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
+  }
+  row.appendChild(rightDateCell);
+
+  // 8. Right Size
+  const rightSizeCell = document.createElement('div');
+  rightSizeCell.className = 'grid-cell col-right-size';
+  if (file.right) {
+    rightSizeCell.textContent = formatBytes(file.right.size);
+  } else {
+    rightSizeCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
+  }
+  row.appendChild(rightSizeCell);
+
+  // 9. Right Action
+  const rightActionCell = document.createElement('div');
+  rightActionCell.className = 'grid-cell col-right-action';
+  rightActionCell.innerHTML = getRightActionHtml(file);
+  row.appendChild(rightActionCell);
+
+  // Missing-side reminder: show the folder directory path (light text) on
+  // the side where the file is absent. The overlay is anchored inside that
+  // side's date cell and overflows across the empty size/action cells, so
+  // it never disturbs the grid's column alignment.
+  if (!file.left || !file.right) {
+    const missingSide = !file.left ? 'left' : 'right';
+    const rootPath = missingSide === 'left' ? scanResult.leftPath : scanResult.rightPath;
+    const dir = file.relativePath.includes('/')
+      ? file.relativePath.slice(0, file.relativePath.lastIndexOf('/'))
+      : '';
+    const folderPathText = dir ? `${rootPath}/${dir}` : rootPath;
+    // Anchor the display at the scan root (e.g. ...\leftRoot) and keep the
+    // file's relative subfolder in full, so it's clear which side's folder
+    // the file is missing from.
+    const condensedRoot = condenseSinglePath(rootPath, 1);
+    const displayText = dir ? `${condensedRoot}\\${dir.replace(/\//g, '\\')}` : condensedRoot;
+    const overlay = document.createElement('div');
+    overlay.className = `missing-side-overlay missing-${missingSide}`;
+    overlay.textContent = displayText;
+    overlay.title = `File missing in ${folderPathText}`;
+    const anchorCell = missingSide === 'left' ? leftDateCell : rightDateCell;
+    anchorCell.appendChild(overlay);
+  }
+
+  return row;
+}
+
 // Render folder comparison table
 function renderGrid() {
   if (!scanResult) return;
+  updateSortIndicators();
 
   let filteredFiles = scanResult.files;
 
@@ -1143,6 +1431,8 @@ function renderGrid() {
     filteredFiles = filteredFiles.filter(f => f.status === 'left-only');
   } else if (currentFilter === 'right') {
     filteredFiles = filteredFiles.filter(f => f.status === 'right-only');
+  } else if (currentFilter === 'identical') {
+    filteredFiles = filteredFiles.filter(f => f.status === 'identical');
   }
 
   if (filteredFiles.length === 0) {
@@ -1156,17 +1446,31 @@ function renderGrid() {
     return;
   }
 
-  // Sort files alphabetically by relative path
-  filteredFiles.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  // Flat mode: any sort other than by path (Filename / original) flattens the
+  // folder grouping into one clean sorted list.
+  const flat = sortState.col && sortState.col !== 'filename';
+
+  if (flat) {
+    const sorted = getSortedFiles(filteredFiles, sortState.col, sortState.dir);
+    gridBody.innerHTML = '';
+    sorted.forEach(file => gridBody.appendChild(buildFileRow(file, 0, true)));
+    return;
+  }
+
+  // Grouped (path) mode. The Filename column toggles ascending/descending
+  // grouping; 'original' (col === null) is plain ascending.
+  const dir = sortState.col === 'filename' ? sortState.dir : 'asc';
+  const collate = (a, b) => (dir === 'desc' ? b.localeCompare(a) : a.localeCompare(b));
+  filteredFiles = [...filteredFiles].sort((a, b) => collate(a.relativePath, b.relativePath));
 
   // Group files by folder path
   const directoryGroups = groupFilesByDirectory(filteredFiles);
-  
-  // Sort folder paths (keys) alphabetically, keeping root files ('') at top
+
+  // Sort folder paths (keys), keeping root files ('') at top
   const sortedFolders = Object.keys(directoryGroups).sort((a, b) => {
     if (a === '') return -1;
     if (b === '') return 1;
-    return a.localeCompare(b);
+    return collate(a, b);
   });
 
   gridBody.innerHTML = '';
@@ -1191,11 +1495,11 @@ function renderGrid() {
         const isCollapsed = collapsedFolders.has(folderPath);
         const folderRow = document.createElement('div');
         folderRow.className = `grid-row folder-row ${isCollapsed ? 'collapsed' : ''}`;
-        
+
         // Calculate indentation
         const depth = folderPath.split('/').length - 1;
         const indentHtml = `<span class="file-indent" style="width: ${depth * 10}px"></span>`;
-        
+
         folderRow.innerHTML = `
           <div class="folder-cell">
             ${indentHtml}
@@ -1204,7 +1508,7 @@ function renderGrid() {
             <span>${folderPath}</span>
           </div>
         `;
-        
+
         folderRow.addEventListener('click', () => {
           if (collapsedFolders.has(folderPath)) {
             collapsedFolders.delete(folderPath);
@@ -1213,160 +1517,16 @@ function renderGrid() {
           }
           renderGrid();
         });
-        
+
         gridBody.appendChild(folderRow);
       }
     }
 
     // Render Files under this folder
     if (!isParentCollapsed && !collapsedFolders.has(folderPath)) {
+      const depth = folderPath === '' ? 0 : folderPath.split('/').length;
       directoryGroups[folderPath].forEach(file => {
-        const row = document.createElement('div');
-        const newerClass = file.status === 'modified' && file.newerSide ? ` newer-${file.newerSide}` : '';
-        row.className = `grid-row status-${file.status}${newerClass}`;
-
-        // Indent subfolder files one level past their (flattened) folder row.
-        const depth = folderPath === '' ? 0 : folderPath.split('/').length;
-        const indentHtml = `<span class="file-indent" style="width: ${depth * 10}px"></span>`;
-
-        // 1. Filename Cell
-        const filenameCell = document.createElement('div');
-        filenameCell.className = 'grid-cell col-filename';
-        const displayFile = file.left || file.right;
-        // Show the diff button for modified files, and for any file-pair row
-        // (two explicit files) regardless of status so it can be re-opened.
-        const isFilePair = !!(file.leftFile || file.rightFile);
-        const diffBtnHtml = (file.status === 'modified' || isFilePair)
-          ? `<button class="icon-btn grid-action-btn btn-view-diff filename-diff-btn" data-action="viewDiff" data-path="${file.relativePath}" title="View Diff"><span class="material-symbols-outlined">difference</span></button>`
-          : '';
-        const iconUrl = getFileIconUrl(file.name);
-        // When two paired files have different names, show "left ↔ right".
-        const nameLabel = (isFilePair && file.rightName && file.rightName !== file.name)
-          ? `${file.name} ↔ ${file.rightName}`
-          : file.name;
-        if (displayFile) {
-          filenameCell.innerHTML = `
-            <div class="file-cell">
-              ${indentHtml}
-              <img class="file-type-icon" src="${iconUrl}" alt="" aria-hidden="true">
-              <span class="file-name" title="${file.relativePath}">${nameLabel}</span>
-              ${diffBtnHtml}
-            </div>
-          `;
-        } else {
-          filenameCell.innerHTML = `
-            <div class="file-cell ghost-placeholder">
-              ${indentHtml}
-              <img class="file-type-icon" src="/icons/blank.svg" alt="" aria-hidden="true">
-              <span class="file-name">(Unknown)</span>
-            </div>
-          `;
-        }
-        row.appendChild(filenameCell);
-
-        // 2. Type Cell
-        const typeCell = document.createElement('div');
-        typeCell.className = 'grid-cell col-type';
-        typeCell.textContent = getFileType(file.name);
-        row.appendChild(typeCell);
-
-        // 3. Status Cell
-        const statusCell = document.createElement('div');
-        statusCell.className = 'grid-cell col-status';
-        statusCell.innerHTML = getStatusCellHtml(file);
-        row.appendChild(statusCell);
-
-        // 4. Left Date
-        const leftDateCell = document.createElement('div');
-        leftDateCell.className = 'grid-cell col-left-date';
-        if (file.left) {
-          const leftCompareMtime = file.status === 'modified' ? file.right?.mtime : null;
-          const leftDateStr = formatDate(file.left.mtime, leftCompareMtime);
-          if (file.status === 'modified' && file.newerSide === 'left' && file.timeDiffStr) {
-            leftDateCell.innerHTML = `<span class="newer-indicator" title="Left is newer by ${file.timeDiffStr}">◄ ${file.timeDiffStr}</span><span class="date-text">${leftDateStr}</span>`;
-          } else {
-            leftDateCell.innerHTML = `<span class="date-text">${leftDateStr}</span>`;
-          }
-          leftDateCell.title = file.left.mtime;
-        } else {
-          leftDateCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
-        }
-        row.appendChild(leftDateCell);
-
-        // 5. Left Size
-        const leftSizeCell = document.createElement('div');
-        leftSizeCell.className = 'grid-cell col-left-size';
-        if (file.left) {
-          leftSizeCell.textContent = formatBytes(file.left.size);
-        } else {
-          leftSizeCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
-        }
-        row.appendChild(leftSizeCell);
-
-        // 6. Left Action
-        const leftActionCell = document.createElement('div');
-        leftActionCell.className = 'grid-cell col-left-action';
-        leftActionCell.innerHTML = getLeftActionHtml(file);
-        row.appendChild(leftActionCell);
-
-        // 7. Right Date
-        const rightDateCell = document.createElement('div');
-        rightDateCell.className = 'grid-cell col-right-date';
-        if (file.right) {
-          const rightCompareMtime = file.status === 'modified' ? file.left?.mtime : null;
-          const rightDateStr = formatDate(file.right.mtime, rightCompareMtime);
-          if (file.status === 'modified' && file.newerSide === 'right' && file.timeDiffStr) {
-            rightDateCell.innerHTML = `<span class="newer-indicator right-side-newer" title="Right is newer by ${file.timeDiffStr}">► ${file.timeDiffStr}</span><span class="date-text">${rightDateStr}</span>`;
-          } else {
-            rightDateCell.innerHTML = `<span class="date-text">${rightDateStr}</span>`;
-          }
-          rightDateCell.title = file.right.mtime;
-        } else {
-          rightDateCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
-        }
-        row.appendChild(rightDateCell);
-
-        // 8. Right Size
-        const rightSizeCell = document.createElement('div');
-        rightSizeCell.className = 'grid-cell col-right-size';
-        if (file.right) {
-          rightSizeCell.textContent = formatBytes(file.right.size);
-        } else {
-          rightSizeCell.innerHTML = `<span class="ghost-placeholder">-</span>`;
-        }
-        row.appendChild(rightSizeCell);
-
-        // 9. Right Action
-        const rightActionCell = document.createElement('div');
-        rightActionCell.className = 'grid-cell col-right-action';
-        rightActionCell.innerHTML = getRightActionHtml(file);
-        row.appendChild(rightActionCell);
-
-        // Missing-side reminder: show the folder directory path (light text) on
-        // the side where the file is absent. The overlay is anchored inside that
-        // side's date cell and overflows across the empty size/action cells, so
-        // it never disturbs the grid's column alignment.
-        if (!file.left || !file.right) {
-          const missingSide = !file.left ? 'left' : 'right';
-          const rootPath = missingSide === 'left' ? scanResult.leftPath : scanResult.rightPath;
-          const dir = file.relativePath.includes('/')
-            ? file.relativePath.slice(0, file.relativePath.lastIndexOf('/'))
-            : '';
-          const folderPathText = dir ? `${rootPath}/${dir}` : rootPath;
-          // Anchor the display at the scan root (e.g. ...\leftRoot) and keep the
-          // file's relative subfolder in full, so it's clear which side's folder
-          // the file is missing from.
-          const condensedRoot = condenseSinglePath(rootPath, 1);
-          const displayText = dir ? `${condensedRoot}\\${dir.replace(/\//g, '\\')}` : condensedRoot;
-          const overlay = document.createElement('div');
-          overlay.className = `missing-side-overlay missing-${missingSide}`;
-          overlay.textContent = displayText;
-          overlay.title = `File missing in ${folderPathText}`;
-          const anchorCell = missingSide === 'left' ? leftDateCell : rightDateCell;
-          anchorCell.appendChild(overlay);
-        }
-
-        gridBody.appendChild(row);
+        gridBody.appendChild(buildFileRow(file, depth, false));
       });
     }
   });
@@ -1442,13 +1602,22 @@ searchInput.addEventListener('input', (e) => {
   renderGrid();
 });
 
+// Single source of truth for the active filter. Keeps the filter tabs and the
+// summary-bar chips in sync (both call this), then re-renders.
+const summaryChips = document.querySelectorAll('.summary-chip');
+function setFilter(filter) {
+  currentFilter = filter;
+  filterTabs.forEach(t => t.classList.toggle('active', t.getAttribute('data-filter') === filter));
+  summaryChips.forEach(c => c.classList.toggle('active', c.getAttribute('data-filter') === filter));
+  renderGrid();
+}
+
 filterTabs.forEach(tab => {
-  tab.addEventListener('click', () => {
-    filterTabs.forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    currentFilter = tab.getAttribute('data-filter');
-    renderGrid();
-  });
+  tab.addEventListener('click', () => setFilter(tab.getAttribute('data-filter')));
+});
+
+summaryChips.forEach(chip => {
+  chip.addEventListener('click', () => setFilter(chip.getAttribute('data-filter')));
 });
 
 // Event Delegation for Grid Action buttons
@@ -1473,6 +1642,50 @@ gridBody.addEventListener('click', (e) => {
 // Undo Banner action
 undoBtn.addEventListener('click', undoLastAction);
 closeUndoBannerBtn.addEventListener('click', hideUndoToast);
+
+// --- Export full scan results as CSV ---------------------------------------
+// Enabled only after a successful scan. Dumps every file (full results, not the
+// active filter) with path, status, sizes and dates — useful for audit / Excel.
+const exportCsvBtn = document.getElementById('export-csv-btn');
+
+function escapeCsv(value) {
+  const s = value == null ? '' : String(value);
+  // Quote fields containing a comma, quote or newline; double embedded quotes.
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function exportResultsCsv() {
+  if (!scanResult || !Array.isArray(scanResult.files)) return;
+  const headers = ['Path', 'Status', 'Left Size', 'Right Size', 'Left Modified', 'Right Modified'];
+  const lines = [headers.join(',')];
+
+  scanResult.files.forEach((f) => {
+    lines.push([
+      escapeCsv(f.relativePath),
+      escapeCsv(f.status),
+      escapeCsv(f.left ? f.left.size : ''),
+      escapeCsv(f.right ? f.right.size : ''),
+      escapeCsv(f.left ? f.left.mtime : ''),
+      escapeCsv(f.right ? f.right.mtime : ''),
+    ].join(','));
+  });
+
+  // Prefix a UTF-8 BOM so Excel reads non-ASCII paths correctly.
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `comparer-${stamp}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+if (exportCsvBtn) {
+  exportCsvBtn.addEventListener('click', exportResultsCsv);
+}
 
 // Maximize toggle
 const diffMaximizeBtn = document.getElementById('diff-maximize-btn');
@@ -1542,6 +1755,7 @@ document.addEventListener('DOMContentLoaded', () => {
   localStorage.removeItem('comparer_col_widths_ver');
 
   initResizableColumns();
+  initSortableHeaders();
 });
 
 // Per-column min/max constraints (px). Filename max keeps fixed cols always visible.
@@ -1616,22 +1830,81 @@ function renderExclusions() {
     li.innerHTML = `
       <div class="side-panel-item-main">
         <div class="side-panel-item-glob"></div>
+        <div class="exclusion-test-results hidden"></div>
       </div>
       <div class="side-panel-item-actions">
-        <button class="side-panel-mini-btn danger" title="Remove pattern">
+        <button class="side-panel-mini-btn btn-test" title="Test: preview which files this pattern excludes">
+          <span class="material-symbols-outlined">search</span>
+        </button>
+        <button class="side-panel-mini-btn danger btn-remove" title="Remove pattern">
           <span class="material-symbols-outlined">delete</span>
         </button>
       </div>
     `;
     li.querySelector('.side-panel-item-glob').textContent = glob;
-    li.querySelector('.side-panel-mini-btn').addEventListener('click', () => {
+    li.querySelector('.btn-remove').addEventListener('click', () => {
       ignoreGlobs.splice(idx, 1);
       saveIgnoreGlobs();
       renderExclusions();
       triggerRescanForIgnoreChange();
     });
+    const resultsEl = li.querySelector('.exclusion-test-results');
+    li.querySelector('.btn-test').addEventListener('click', () => testIgnorePattern(glob, resultsEl));
     exclusionsListEl.appendChild(li);
   });
+}
+
+// Preview which files a single glob would exclude from the current scan paths.
+// Calls POST /api/ignore-test (read-only — no scan, no mutation) and renders the
+// matches inline beneath the pattern. Toggling again collapses the results.
+async function testIgnorePattern(glob, resultsEl) {
+  // Toggle off if already showing results for this pattern.
+  if (!resultsEl.classList.contains('hidden')) {
+    resultsEl.classList.add('hidden');
+    resultsEl.innerHTML = '';
+    return;
+  }
+
+  // Use the active scan paths if present, else the current input values.
+  const leftPath = (lastScanParams?.leftPath || leftPathInput.value).trim();
+  const rightPath = (lastScanParams?.rightPath || rightPathInput.value).trim();
+  const recursive = lastScanParams ? lastScanParams.recursive : recursiveCheckbox.checked;
+
+  resultsEl.classList.remove('hidden');
+  if (!leftPath || !rightPath) {
+    resultsEl.innerHTML = `<div class="exclusion-test-hint">Enter both folder paths (or run a scan) first.</div>`;
+    return;
+  }
+
+  resultsEl.innerHTML = `<div class="exclusion-test-hint">Testing…</div>`;
+  try {
+    const res = await fetch('/api/ignore-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ leftPath, rightPath, recursive, pattern: glob }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Test failed.');
+
+    if (data.count === 0) {
+      resultsEl.innerHTML = `<div class="exclusion-test-hint">No files match this pattern in the current paths.</div>`;
+      return;
+    }
+
+    const header = `<div class="exclusion-test-header">Excludes ${data.count} file${data.count === 1 ? '' : 's'}${data.truncated ? ` (showing first ${data.matches.length})` : ''}</div>`;
+    const ul = document.createElement('ul');
+    ul.className = 'exclusion-test-list';
+    data.matches.forEach((m) => {
+      const row = document.createElement('li');
+      row.innerHTML = `<span class="exclusion-test-side side-${m.side}">${m.side === 'left' ? 'L' : 'R'}</span><span class="exclusion-test-path"></span>`;
+      row.querySelector('.exclusion-test-path').textContent = m.relativePath;
+      ul.appendChild(row);
+    });
+    resultsEl.innerHTML = header;
+    resultsEl.appendChild(ul);
+  } catch (err) {
+    resultsEl.innerHTML = `<div class="exclusion-test-hint">Error: ${escapeHtml(err.message)}</div>`;
+  }
 }
 
 // Re-scan when the ignore list changes — but only if a scan is already active.
@@ -1680,7 +1953,21 @@ exclusionsOverlay.addEventListener('click', (e) => {
 const sessionsOverlay = document.getElementById('sessions-overlay');
 const sessionsListEl = document.getElementById('sessions-list');
 
-function loadSessions() {
+// Which backend the last load/save actually used: 'disk' (shared team file via
+// the API) or 'local' (browser localStorage fallback). Drives the panel badge.
+let sessionsBackend = 'local';
+const sessionsBackendBadge = document.getElementById('sessions-backend-badge');
+
+function updateSessionsBadge() {
+  if (!sessionsBackendBadge) return;
+  const disk = sessionsBackend === 'disk';
+  sessionsBackendBadge.textContent = disk ? 'Team (disk)' : 'Local (browser)';
+  sessionsBackendBadge.classList.toggle('badge-disk', disk);
+  sessionsBackendBadge.classList.toggle('badge-local', !disk);
+}
+
+// Read the local cache (also kept in sync with the disk store as a fallback).
+function loadSessionsLocal() {
   try {
     const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
     if (raw) {
@@ -1691,12 +1978,44 @@ function loadSessions() {
   return [];
 }
 
-function saveSessions(sessions) {
-  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+// Load sessions, preferring the shared disk store and falling back to the local
+// cache if the API is unreachable. Sets `sessionsBackend` to whichever was used.
+async function loadSessions() {
+  try {
+    const res = await fetch('/api/sessions');
+    if (!res.ok) throw new Error('api');
+    const data = await res.json();
+    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    sessionsBackend = 'disk';
+    // Mirror to the local cache so an offline reload still shows the list.
+    localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+    return sessions;
+  } catch (e) {
+    sessionsBackend = 'local';
+    return loadSessionsLocal();
+  }
 }
 
-function renderSessions() {
-  const sessions = loadSessions();
+// Persist sessions to the shared disk store; on failure fall back to local only.
+// Always mirrors to the local cache regardless of backend.
+async function saveSessions(sessions) {
+  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+  try {
+    const res = await fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessions }),
+    });
+    if (!res.ok) throw new Error('api');
+    sessionsBackend = 'disk';
+  } catch (e) {
+    sessionsBackend = 'local';
+  }
+}
+
+async function renderSessions() {
+  const sessions = await loadSessions();
+  updateSessionsBadge();
   sessionsListEl.innerHTML = '';
   sessions.forEach((session) => {
     const li = document.createElement('li');
@@ -1722,17 +2041,17 @@ function renderSessions() {
     li.querySelector('.side-panel-item-meta').title = `${session.leftPath}\n${session.rightPath}`;
 
     li.querySelector('.btn-reload').addEventListener('click', () => reloadSession(session));
-    li.querySelector('.btn-delete').addEventListener('click', () => {
+    li.querySelector('.btn-delete').addEventListener('click', async () => {
       if (!confirm(`Delete session "${session.name}"?`)) return;
-      const remaining = loadSessions().filter((s) => s.name !== session.name);
-      saveSessions(remaining);
-      renderSessions();
+      const remaining = (await loadSessions()).filter((s) => s.name !== session.name);
+      await saveSessions(remaining);
+      await renderSessions();
     });
     sessionsListEl.appendChild(li);
   });
 }
 
-function saveCurrentSession() {
+async function saveCurrentSession() {
   const leftPath = leftPathInput.value.trim();
   const rightPath = rightPathInput.value.trim();
   if (!leftPath || !rightPath) {
@@ -1747,7 +2066,7 @@ function saveCurrentSession() {
     return;
   }
 
-  const sessions = loadSessions();
+  const sessions = await loadSessions();
   const existingIdx = sessions.findIndex((s) => s.name === name);
   if (existingIdx !== -1 && !confirm(`A session named "${name}" already exists. Overwrite it?`)) {
     return;
@@ -1768,8 +2087,8 @@ function saveCurrentSession() {
   } else {
     sessions.push(session);
   }
-  saveSessions(sessions);
-  renderSessions();
+  await saveSessions(sessions);
+  await renderSessions();
 }
 
 function reloadSession(session) {

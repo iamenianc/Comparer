@@ -87,7 +87,29 @@ Click the diff icon on any modified file to open a dedicated diff window:
 - **Copy** — copy the full left or right file text to the clipboard with the **L** / **R**
   buttons. Click any line number to copy a `filename:line` reference.
 - **Export** — download the current diff as a self-contained HTML report (all CSS inlined,
-  interactive controls stripped) via the **Export** button.
+  interactive controls stripped) via the **Export** button. The report opens with a metadata
+  header listing the **Left path**, **Right path**, and **export timestamp**.
+
+### Summary Bar
+
+A chip strip below the header shows live counts for **Modified**, **Left Only**, **Right Only**,
+and **Identical**, alongside a proportional color bar that visualizes the breakdown at a glance.
+Each chip is a clickable shortcut to that filter and stays in sync with the filter tabs (clicking
+a chip lights up the matching tab and vice-versa).
+
+### Column Sort
+
+Every sortable column header (**Filename**, **Status**, **Left/Right Date**, **Left/Right Size**)
+cycles through a tri-state sort on click: ascending → descending → original. The choice is
+persisted to `localStorage` (`comparer_sort`) and defaults to **Status-first** so differences
+float to the top. Sorting by anything other than the path (Filename) flattens the folder grouping
+into a clean flat list; sorting by Filename or returning to *original* restores the folder tree.
+
+### Export CSV
+
+The **Export CSV** toolbar button (enabled after a scan) downloads the full scan results — one row
+per file with path, status, left/right sizes, and left/right modified dates — for audit and Excel
+workflows. The file is UTF-8 with a BOM so spreadsheets read non-ASCII paths correctly.
 
 ### Two-Way Sync
 
@@ -115,13 +137,23 @@ scan. The list is seeded with sensible defaults (`**/.git`, `**/node_modules`, `
 to `localStorage` (`comparer_ignore_globs`), sent on every scan, and a change triggers an
 automatic re-scan when a comparison is active.
 
+Each pattern has a **Test** button (🔍) that previews exactly which files it would exclude from
+the current scan paths — the matches are listed inline (per side) without altering the grid or
+requiring a re-scan. It calls `POST /api/ignore-test`, which walks the paths with no filtering and
+reports every entry the single pattern matches.
+
 ### Sessions
 
 Open the **Sessions** panel to save and reload named comparison setups. A session captures
-`{ name, leftPath, rightPath, recursive, ignore[], activeFilter, savedAt }` and is stored in
-`localStorage` (`comparer_sessions`). **Reload** repopulates the inputs, ignore list, and
-active filter, then runs a scan; **Delete** removes a saved session. Saving over an existing
-name asks for overwrite confirmation.
+`{ name, leftPath, rightPath, recursive, ignore[], activeFilter, savedAt }`. **Reload** repopulates
+the inputs, ignore list, and active filter, then runs a scan; **Delete** removes a saved session.
+Saving over an existing name asks for overwrite confirmation.
+
+**Team sessions (disk):** sessions are persisted to `.comparer/sessions.json` in the directory you
+run `npm start` from, so anyone running from that project folder sees the same list immediately. The
+panel header shows a **Team (disk)** / **Local (browser)** badge indicating which backend is active.
+If the API is unreachable, the panel transparently falls back to `localStorage` (`comparer_sessions`),
+which is also kept as a mirror so an offline reload still shows the last-known list.
 
 ---
 
@@ -135,7 +167,9 @@ The project is structured with a lightweight Express backend and a zero-compilat
 * **Frontend (`public/`)**:
   * `index.html`: Grid structure, diff modal, and the Exclusions / Sessions side panels.
   * `style.css`: Clean, strict light mode theme implementing Google Material Design guidelines and CSS grid columns.
-  * `app.js`: Main frontend logic, EventSource watcher, grid rendering, resizing mechanics, diff popup, exclusions, and session management.
+  * `app.js`: Main frontend logic, EventSource watcher, grid rendering (with the summary bar,
+    tri-state column sort, and CSV/HTML export), resizing mechanics, diff popup, exclusions
+    (with pattern testing), and disk-backed session management.
 
 ### Path safety
 
@@ -163,6 +197,16 @@ resolved base directory, rejecting any `..` traversal before reading, writing, o
   * Body: `{ leftPath: String, rightPath: String, relativePath: String, action: 'keepLeft' | 'keepRight' | 'deleteLeft' | 'deleteRight' }`
 * **`POST /api/undo`**: Restores the last sync action using backed up files stored in the OS temp directory.
 * **`GET /api/watch`**: Establishes a Server-Sent Events (SSE) connection mapping real-time `chokidar` filesystem event alerts.
+* **`POST /api/ignore-test`**: Previews which files a single glob would exclude from the given paths.
+  * Body: `{ leftPath: String, rightPath: String, recursive: Boolean, pattern: String }`
+  * Response: `{ pattern, count, matches: [{ side, relativePath }], truncated }`. Read-only — it
+    walks both trees with no ignore filtering and reports every entry the pattern matches (capped
+    at 500 matches, with `truncated: true` when more exist).
+* **`GET /api/sessions`** / **`POST /api/sessions`**: Read and overwrite the shared, disk-backed
+  session list stored at `.comparer/sessions.json` (relative to the server's working directory).
+  * `GET` → `{ sessions: Session[] }` (empty array if the file is absent).
+  * `POST` body: `{ sessions: Session[] }` — the client owns the full list (load-all / mutate /
+    save-all). The frontend falls back to `localStorage` if these routes are unreachable.
 
 ### CSS Custom Layout Grid
 
