@@ -10,7 +10,13 @@ let lastScanParams = null;
 // through window.comparer (exposed by preload.cjs). Each method returns the
 // unwrapped response data or throws an Error — the same contract the old
 // fetch()+JSON code expected. No HTTP, no localhost listener.
-const comparer = window.comparer;
+//
+// NOTE: the local alias is deliberately NOT named `comparer`. contextBridge
+// exposes `window.comparer` as a non-configurable global property, and a
+// top-level `const comparer` in this classic script collides with it under
+// the V8 in Electron 42+ ("Identifier 'comparer' has already been declared"),
+// which aborts the whole script before any listeners bind.
+const api = window.comparer;
 
 // Active filesystem-watch subscription (replaces the SSE EventSource).
 let watchUnsub = null;
@@ -167,7 +173,7 @@ async function runScan() {
   `;
 
   try {
-    const data = await comparer.scan(lastScanParams);
+    const data = await api.scan(lastScanParams);
 
     scanResult = data;
     leftPathInput.value = data.leftPath;
@@ -289,11 +295,11 @@ function setupSSEWatcher() {
   stopWatcher();
 
   const ignore = lastScanParams ? lastScanParams.ignore : ignoreGlobs;
-  comparer
+  api
     .startWatch({ leftPath: scanResult.leftPath, rightPath: scanResult.rightPath, ignore })
     .catch((err) => console.warn('Watch start failed:', err.message));
 
-  watchUnsub = comparer.onWatch((data) => {
+  watchUnsub = api.onWatch((data) => {
     console.log('Real-time watch event:', data);
     refreshScanSilent();
   });
@@ -305,7 +311,7 @@ function stopWatcher() {
     watchUnsub();
     watchUnsub = null;
   }
-  comparer.stopWatch().catch(() => {});
+  api.stopWatch().catch(() => {});
 }
 
 // Ensure watchers are torn down when the window unloads.
@@ -317,7 +323,7 @@ window.addEventListener('beforeunload', () => {
 async function refreshScanSilent() {
   if (!lastScanParams) return;
   try {
-    const data = await comparer.scan(lastScanParams);
+    const data = await api.scan(lastScanParams);
     scanResult = data;
     updateTabCounts();
     updateHeaders();
@@ -368,7 +374,7 @@ function isBinaryFile(filename) {
 // Helper: request MD5 hash of a file
 async function getFileHashFromServer(filePath) {
   try {
-    const data = await comparer.hash({ filePath });
+    const data = await api.hash({ filePath });
     return data.hash || 'Unavailable';
   } catch (e) {
     console.error('Failed to get file hash:', e);
@@ -380,7 +386,7 @@ async function getFileHashFromServer(filePath) {
 async function performSyncAction(relativePath, action) {
   if (!scanResult) return;
   try {
-    await comparer.sync({
+    await api.sync({
       leftPath: scanResult.leftPath,
       rightPath: scanResult.rightPath,
       relativePath,
@@ -400,7 +406,7 @@ async function performSyncAction(relativePath, action) {
 // Undo API handler
 async function undoLastAction() {
   try {
-    await comparer.undo();
+    await api.undo();
     hideUndoToast();
     statusText.textContent = 'Undo completed';
     await refreshScanSilent();
@@ -442,7 +448,7 @@ let _styleCssText = null;
 async function getStyleCssText() {
   if (_styleCssText !== null) return _styleCssText;
   try {
-    const data = await comparer.readAsset('style.css');
+    const data = await api.readAsset('style.css');
     _styleCssText = data.content;
   } catch {
     _styleCssText = '';
@@ -795,7 +801,7 @@ async function openDiffWindow(file) {
   });
 
   try {
-    const data = await comparer.diff(diffRequestBody(file));
+    const data = await api.diff(diffRequestBody(file));
     if (win.closed) return;
 
     leftCode.innerHTML = '';
@@ -961,7 +967,7 @@ async function showDiffModal(file) {
     diffModal.classList.remove('hidden');
     
     try {
-      const data = await comparer.diff({
+      const data = await api.diff({
         leftPath: scanResult.leftPath,
         rightPath: scanResult.rightPath,
         relativePath
@@ -1854,7 +1860,7 @@ async function testIgnorePattern(glob, resultsEl) {
 
   resultsEl.innerHTML = `<div class="exclusion-test-hint">Testing…</div>`;
   try {
-    const data = await comparer.ignoreTest({ leftPath, rightPath, recursive, pattern: glob });
+    const data = await api.ignoreTest({ leftPath, rightPath, recursive, pattern: glob });
 
     if (data.count === 0) {
       resultsEl.innerHTML = `<div class="exclusion-test-hint">No files match this pattern in the current paths.</div>`;
@@ -1952,7 +1958,7 @@ function loadSessionsLocal() {
 // cache if the API is unreachable. Sets `sessionsBackend` to whichever was used.
 async function loadSessions() {
   try {
-    const data = await comparer.getSessions();
+    const data = await api.getSessions();
     const sessions = Array.isArray(data.sessions) ? data.sessions : [];
     sessionsBackend = 'disk';
     // Mirror to the local cache so an offline reload still shows the list.
@@ -1969,7 +1975,7 @@ async function loadSessions() {
 async function saveSessions(sessions) {
   localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
   try {
-    await comparer.setSessions(sessions);
+    await api.setSessions(sessions);
     sessionsBackend = 'disk';
   } catch (e) {
     sessionsBackend = 'local';
@@ -2091,7 +2097,7 @@ document.getElementById('close-sessions-btn').addEventListener('click', () => {
 // process.
 document.getElementById('export-sessions-btn').addEventListener('click', async () => {
   try {
-    const res = await comparer.exportSessions();
+    const res = await api.exportSessions();
     if (!res.canceled) statusText.textContent = `Exported ${res.count} session(s)`;
   } catch (err) {
     alert(`Export failed: ${err.message}`);
@@ -2099,7 +2105,7 @@ document.getElementById('export-sessions-btn').addEventListener('click', async (
 });
 document.getElementById('import-sessions-btn').addEventListener('click', async () => {
   try {
-    const res = await comparer.importSessions();
+    const res = await api.importSessions();
     if (res.canceled) return;
     localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(res.sessions));
     await renderSessions();
