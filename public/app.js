@@ -185,6 +185,12 @@ async function runScan() {
     setupSSEWatcher();
     setStatusLight('done');
     statusText.textContent = 'Scan Completed';
+
+    // File-pair mode: the user pointed at two files directly — auto-open the
+    // side-by-side diff for the single synthesized row.
+    if (data.filePairMode && data.files.length === 1) {
+      openDiffWindow(data.files[0]);
+    }
   } catch (error) {
     console.error('Scan error:', error);
     setStatusLight('error');
@@ -430,6 +436,76 @@ function hideUndoToast() {
 // Track open diff popup windows so they can be re-focused / closed on rescan.
 const openDiffWindows = new Map();
 
+// Build the /api/diff request body. File-pair mode (two explicit, possibly
+// differently-named files) sends leftFile/rightFile; folder mode sends the
+// shared relativePath joined to each scan root.
+function diffRequestBody(file) {
+  if (file.leftFile || file.rightFile) {
+    return { leftFile: file.leftFile, rightFile: file.rightFile };
+  }
+  return { leftPath: scanResult.leftPath, rightPath: scanResult.rightPath, relativePath: file.relativePath };
+}
+
+// Cache the app stylesheet text so exports can inline it (self-contained file).
+let _styleCssText = null;
+async function getStyleCssText() {
+  if (_styleCssText !== null) return _styleCssText;
+  try {
+    const res = await fetch(`${window.location.origin}/style.css`);
+    _styleCssText = await res.text();
+  } catch {
+    _styleCssText = '';
+  }
+  return _styleCssText;
+}
+
+// Export the diff window's current view as a standalone, self-contained HTML
+// file: inlines all CSS and strips the interactive controls (buttons/footer).
+async function exportDiffHtml(win, wd, file) {
+  const cssApp = await getStyleCssText();
+  const cssInline = [...wd.querySelectorAll('style')].map(s => s.textContent).join('\n');
+
+  // Clone the body and remove interactive bits that don't belong in a report.
+  const body = wd.body.cloneNode(true);
+  body.querySelector('.diff-win-actions')?.remove();
+  body.querySelector('.diff-win-footer')?.remove();
+  body.querySelectorAll('.nav-target').forEach(el => el.classList.remove('nav-target'));
+
+  const title = `Diff: ${file.name}${file.rightName && file.rightName !== file.name ? ' ↔ ' + file.rightName : ''}`;
+  const generated = new Date().toLocaleString();
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>${escapeHtml(title)}</title>
+<style>
+${cssApp}
+${cssInline}
+.diff-win-body { overflow: visible !important; }
+.diff-code { overflow: visible !important; height: auto !important; }
+.export-meta { padding: 6px 16px; font-size: 11px; color: var(--text-secondary);
+  border-bottom: 1px solid var(--google-gray-border); background: var(--google-gray-surface); }
+</style>
+</head>
+<body>
+${body.innerHTML}
+<div class="export-meta">Generated ${escapeHtml(generated)} · FolderCompare</div>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = wd.createElement('a');
+  const safeName = file.name.replace(/[^a-z0-9._-]/gi, '_');
+  a.href = url;
+  a.download = `diff-${safeName}.html`;
+  wd.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // Open a diff in a real, separately resizable OS window (popup).
 // Falls back to the in-page modal if the popup is blocked.
 async function openDiffWindow(file) {
@@ -454,6 +530,9 @@ async function openDiffWindow(file) {
 
   const condensed = condensePaths(scanResult.leftPath, scanResult.rightPath);
   const binary = isBinaryFile(file.name);
+  // File-pair mode: two explicit files (names may differ). Sync is disabled —
+  // this view is for comparison only.
+  const filePair = !!(file.leftFile || file.rightFile);
 
   // Build a self-contained document that reuses the app stylesheet so the
   // popup matches the main UI.
@@ -485,10 +564,33 @@ async function openDiffWindow(file) {
     .diff-win-title h3 { margin: 0; font-size: 14px; }
     .diff-win-title .modal-subtitle { font-size: 11px; color: var(--text-secondary);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .diff-win-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .diff-win-actions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
     .diff-win-body { flex: 1; padding: 16px; overflow: hidden; }
     .diff-win-footer { display: flex; gap: 12px; padding: 12px 16px;
       border-top: 1px solid var(--google-gray-border); background: var(--google-gray-surface); }
+    .diff-stats { display: flex; gap: 10px; font-size: 12px; font-weight: 600;
+      margin-right: 4px; white-space: nowrap; }
+    .diff-stats .stat-added { color: #137333; }
+    .diff-stats .stat-removed { color: #c5221f; }
+    .diff-line-num { cursor: pointer; }
+    .diff-line-num:hover { text-decoration: underline; }
+    /* Change-block highlight when navigating */
+    .diff-line.nav-target { outline: 2px solid var(--google-blue); outline-offset: -2px; }
+    /* Word-wrap toggle */
+    .diff-code.wrap { white-space: pre-wrap; word-break: break-word; }
+    .diff-code.wrap .diff-line { width: auto; }
+    /* Unified (git-style) view */
+    #win-unified-container { height: 100%; overflow: hidden;
+      border: 1px solid var(--google-gray-border); border-radius: 8px; }
+    #win-unified-code { height: 100%; overflow: auto; margin: 0; padding: 12px;
+      font-family: var(--font-mono); font-size: 12px; line-height: 1.5;
+      background: var(--google-gray-bg); white-space: pre; }
+    #win-unified-code.wrap { white-space: pre-wrap; word-break: break-word; }
+    .u-line { display: block; }
+    .u-line.added { background: #e6f4ea; color: #137333; }
+    .u-line.removed { background: #fce8e6; color: #c5221f; }
+    .u-line.hunk { color: var(--google-blue); background: var(--google-gray-surface);
+      font-weight: 600; }
   </style>
 </head>
 <body>
@@ -498,9 +600,35 @@ async function openDiffWindow(file) {
       <span class="modal-subtitle">${escapeHtml(relativePath)}</span>
     </div>
     <div class="diff-win-actions">
-      <button id="win-diffs-only" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Show diffs only">
+      <span id="win-stats" class="diff-stats"${binary ? ' style="display:none"' : ''}></span>
+      <button id="win-prev" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Previous change (N)">
+        <span class="material-symbols-outlined">keyboard_arrow_up</span>
+      </button>
+      <button id="win-next" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Next change (n)">
+        <span class="material-symbols-outlined">keyboard_arrow_down</span>
+      </button>
+      <button id="win-wrap" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Toggle word wrap (w)">
+        <span class="material-symbols-outlined">wrap_text</span>
+      </button>
+      <button id="win-copy-left" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Copy left text">
+        <span class="material-symbols-outlined">content_copy</span>
+        <span class="modal-action-label">L</span>
+      </button>
+      <button id="win-copy-right" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Copy right text">
+        <span class="material-symbols-outlined">content_copy</span>
+        <span class="modal-action-label">R</span>
+      </button>
+      <button id="win-view-toggle" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Toggle unified / side-by-side (u)">
+        <span class="material-symbols-outlined">view_agenda</span>
+        <span class="modal-action-label">Unified</span>
+      </button>
+      <button id="win-diffs-only" class="modal-action-btn"${binary ? ' style="display:none"' : ''} title="Show diffs only (d)">
         <span class="material-symbols-outlined">format_list_bulleted</span>
         <span class="modal-action-label">Diffs only</span>
+      </button>
+      <button id="win-export" class="modal-action-btn" title="Export this diff as a standalone HTML file">
+        <span class="material-symbols-outlined">download</span>
+        <span class="modal-action-label">Export</span>
       </button>
     </div>
   </header>
@@ -514,6 +642,9 @@ async function openDiffWindow(file) {
         <div class="${rightHeaderClass}">${escapeHtml(rightLabel)}</div>
         <pre class="diff-code" id="win-right-code">Loading diff...</pre>
       </div>
+    </div>
+    <div id="win-unified-container" class="hidden" style="height:100%;overflow:hidden;border:1px solid var(--google-gray-border);border-radius:8px;">
+      <pre id="win-unified-code"></pre>
     </div>
     <div id="win-binary-container" class="diff-binary-container${binary ? '' : ' hidden'}">
       <div class="binary-grid">
@@ -539,12 +670,13 @@ async function openDiffWindow(file) {
     </div>
   </div>
   <footer class="diff-win-footer">
+    ${filePair ? '' : `
     <button id="win-keep-left" class="primary-btn flex-btn btn-keep-new-modal"${file.right ? '' : ' disabled'}>
       <span class="material-symbols-outlined">arrow_back</span><span> ${escapeHtml(keepLeftLabel)}</span>
     </button>
     <button id="win-keep-right" class="primary-btn flex-btn btn-keep-old-modal"${file.left ? '' : ' disabled'}>
       <span class="material-symbols-outlined">arrow_forward</span><span> ${escapeHtml(keepRightLabel)}</span>
-    </button>
+    </button>`}
     <button id="win-close" class="secondary-btn">Close</button>
   </footer>
 </body>
@@ -558,22 +690,32 @@ async function openDiffWindow(file) {
 
   // Footer actions delegate back to the opener so sync uses the same code path.
   wd.getElementById('win-close').onclick = () => win.close();
-  wd.getElementById('win-keep-left').onclick = () => {
-    performSyncAction(relativePath, 'keepRight');
-    win.close();
-  };
-  wd.getElementById('win-keep-right').onclick = () => {
-    performSyncAction(relativePath, 'keepLeft');
-    win.close();
-  };
+  // Esc closes the window (works in both binary and text modes).
+  wd.addEventListener('keydown', (e) => { if (e.key === 'Escape') win.close(); });
+
+  // Export the current diff view as a self-contained HTML file.
+  wd.getElementById('win-export').onclick = () => exportDiffHtml(win, wd, file);
+  if (!filePair) {
+    wd.getElementById('win-keep-left').onclick = () => {
+      performSyncAction(relativePath, 'keepRight');
+      win.close();
+    };
+    wd.getElementById('win-keep-right').onclick = () => {
+      performSyncAction(relativePath, 'keepLeft');
+      win.close();
+    };
+  }
 
   if (binary) {
+    // File-pair mode carries explicit full paths; folder mode joins root + rel.
+    const leftFull = file.leftFile || (scanResult.leftPath + '/' + relativePath);
+    const rightFull = file.rightFile || (scanResult.rightPath + '/' + relativePath);
     if (file.left) {
-      getFileHashFromServer(scanResult.leftPath + '/' + relativePath)
+      getFileHashFromServer(leftFull)
         .then(hash => { if (!win.closed) wd.getElementById('win-left-hash').textContent = hash; });
     }
     if (file.right) {
-      getFileHashFromServer(scanResult.rightPath + '/' + relativePath)
+      getFileHashFromServer(rightFull)
         .then(hash => { if (!win.closed) wd.getElementById('win-right-hash').textContent = hash; });
     }
     return;
@@ -585,10 +727,49 @@ async function openDiffWindow(file) {
   const textContainer = wd.getElementById('win-text-container');
 
   // Diffs-only toggle (local to this window).
-  wd.getElementById('win-diffs-only').onclick = (e) => {
+  const diffsOnlyBtn = wd.getElementById('win-diffs-only');
+  const toggleDiffsOnly = () => {
     const isActive = textContainer.classList.toggle('diffs-only');
-    e.currentTarget.classList.toggle('active', isActive);
+    diffsOnlyBtn.classList.toggle('active', isActive);
   };
+  diffsOnlyBtn.onclick = toggleDiffsOnly;
+
+  // Unified / split toggle.
+  const viewToggleBtn = wd.getElementById('win-view-toggle');
+  const unifiedContainer = wd.getElementById('win-unified-container');
+  const unifiedCode = wd.getElementById('win-unified-code');
+  let isUnified = false;
+  const toggleUnified = () => {
+    isUnified = !isUnified;
+    textContainer.classList.toggle('hidden', isUnified);
+    unifiedContainer.classList.toggle('hidden', !isUnified);
+    viewToggleBtn.classList.toggle('active', isUnified);
+    const label = viewToggleBtn.querySelector('.modal-action-label');
+    label.textContent = isUnified ? 'Split' : 'Unified';
+  };
+  viewToggleBtn.onclick = toggleUnified;
+
+  // Word-wrap toggle.
+  const wrapBtn = wd.getElementById('win-wrap');
+  const toggleWrap = () => {
+    const on = leftCode.classList.toggle('wrap');
+    rightCode.classList.toggle('wrap', on);
+    unifiedCode.classList.toggle('wrap', on);
+    wrapBtn.classList.toggle('active', on);
+  };
+  wrapBtn.onclick = toggleWrap;
+
+  // Copy each side's full text to the clipboard.
+  const copyText = async (codeEl, btn) => {
+    const text = [...codeEl.querySelectorAll('.diff-line-content')].map(n => n.textContent).join('\n');
+    try { await win.navigator.clipboard.writeText(text); } catch { /* clipboard may be blocked */ }
+    const label = btn.querySelector('.modal-action-label');
+    const orig = label.textContent;
+    label.textContent = '✓';
+    setTimeout(() => { label.textContent = orig; }, 900);
+  };
+  wd.getElementById('win-copy-left').onclick = (e) => copyText(leftCode, e.currentTarget);
+  wd.getElementById('win-copy-right').onclick = (e) => copyText(rightCode, e.currentTarget);
 
   // Scroll-sync the two panes (respects the main window's scroll-lock checkbox).
   let syncingLeft = false, syncingRight = false;
@@ -611,7 +792,7 @@ async function openDiffWindow(file) {
     const res = await fetch('/api/diff', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leftPath: scanResult.leftPath, rightPath: scanResult.rightPath, relativePath })
+      body: JSON.stringify(diffRequestBody(file))
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
@@ -619,6 +800,18 @@ async function openDiffWindow(file) {
 
     leftCode.innerHTML = '';
     rightCode.innerHTML = '';
+
+    let added = 0, removed = 0;
+    const changeRows = [];     // left-pane elements that start a change block
+    let prevChanged = false;
+
+    const leftName = file.name;
+    const rightName = file.rightName || file.name;
+    // Click a line number to copy a "name:line" reference.
+    const copyRef = (name, lineNum) => {
+      win.navigator.clipboard?.writeText(`${name}:${lineNum}`).catch(() => {});
+    };
+
     data.rows.forEach(row => {
       const l = wd.createElement('div');
       l.className = 'diff-line';
@@ -628,6 +821,8 @@ async function openDiffWindow(file) {
       } else {
         l.classList.add(`type-${row.left.type}`);
         l.innerHTML = `<span class="diff-line-num">${row.left.lineNum}</span><span class="diff-line-content">${escapeHtml(row.left.text)}</span>`;
+        if (row.left.type === 'removed') removed++;
+        l.querySelector('.diff-line-num').onclick = () => copyRef(leftName, row.left.lineNum);
       }
       leftCode.appendChild(l);
 
@@ -639,8 +834,54 @@ async function openDiffWindow(file) {
       } else {
         r.classList.add(`type-${row.right.type}`);
         r.innerHTML = `<span class="diff-line-num">${row.right.lineNum}</span><span class="diff-line-content">${escapeHtml(row.right.text)}</span>`;
+        if (row.right.type === 'added') added++;
+        r.querySelector('.diff-line-num').onclick = () => copyRef(rightName, row.right.lineNum);
       }
       rightCode.appendChild(r);
+
+      // A "change block" is a run of consecutive non-unchanged rows; record the
+      // first row of each block for prev/next navigation.
+      const changed = (row.left && row.left.type !== 'unchanged') || (row.right && row.right.type !== 'unchanged');
+      if (changed && !prevChanged) changeRows.push(l);
+      prevChanged = changed;
+    });
+
+    // Populate unified view.
+    unifiedCode.innerHTML = '';
+    (data.unified || []).forEach(line => {
+      const el = wd.createElement('span');
+      el.className = `u-line ${line.type}`;
+      el.textContent = line.text;
+      unifiedCode.appendChild(el);
+      unifiedCode.appendChild(wd.createTextNode('\n'));
+    });
+
+    // Header stats.
+    wd.getElementById('win-stats').innerHTML =
+      `<span class="stat-added">+${added}</span><span class="stat-removed">−${removed}</span>`;
+
+    // Prev/next change navigation.
+    let navIdx = -1;
+    const gotoChange = (idx) => {
+      if (!changeRows.length) return;
+      navIdx = (idx + changeRows.length) % changeRows.length;
+      const target = changeRows[navIdx];
+      changeRows.forEach(el => el.classList.remove('nav-target'));
+      target.classList.add('nav-target');
+      target.scrollIntoView({ block: 'center' });
+    };
+    wd.getElementById('win-next').onclick = () => gotoChange(navIdx + 1);
+    wd.getElementById('win-prev').onclick = () => gotoChange(navIdx - 1);
+
+    // Keyboard shortcuts: n/N next/prev change · w wrap · d diffs-only.
+    // (Esc-to-close is wired once above, for both binary and text modes.)
+    wd.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (e.key === 'n') gotoChange(navIdx + 1);
+      else if (e.key === 'N') gotoChange(navIdx - 1);
+      else if (e.key === 'w') toggleWrap();
+      else if (e.key === 'd') toggleDiffsOnly();
+      else if (e.key === 'u') toggleUnified();
     });
   } catch (err) {
     if (win.closed) return;
@@ -992,16 +1233,23 @@ function renderGrid() {
         const filenameCell = document.createElement('div');
         filenameCell.className = 'grid-cell col-filename';
         const displayFile = file.left || file.right;
-        const diffBtnHtml = file.status === 'modified'
+        // Show the diff button for modified files, and for any file-pair row
+        // (two explicit files) regardless of status so it can be re-opened.
+        const isFilePair = !!(file.leftFile || file.rightFile);
+        const diffBtnHtml = (file.status === 'modified' || isFilePair)
           ? `<button class="icon-btn grid-action-btn btn-view-diff filename-diff-btn" data-action="viewDiff" data-path="${file.relativePath}" title="View Diff"><span class="material-symbols-outlined">difference</span></button>`
           : '';
         const iconUrl = getFileIconUrl(file.name);
+        // When two paired files have different names, show "left ↔ right".
+        const nameLabel = (isFilePair && file.rightName && file.rightName !== file.name)
+          ? `${file.name} ↔ ${file.rightName}`
+          : file.name;
         if (displayFile) {
           filenameCell.innerHTML = `
             <div class="file-cell">
               ${indentHtml}
               <img class="file-type-icon" src="${iconUrl}" alt="" aria-hidden="true">
-              <span class="file-name" title="${file.relativePath}">${file.name}</span>
+              <span class="file-name" title="${file.relativePath}">${nameLabel}</span>
               ${diffBtnHtml}
             </div>
           `;

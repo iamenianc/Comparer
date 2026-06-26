@@ -249,6 +249,65 @@ function scanDirectory(dirPath, recursive = true, baseDir = dirPath, compiledIgn
   return results;
 }
 
+// Build a file-stat object (same shape scanDirectory produces) for one file.
+function statFile(fullPath) {
+  const s = fs.statSync(fullPath);
+  return {
+    relativePath: path.basename(fullPath),
+    name: path.basename(fullPath),
+    fullPath,
+    size: s.size,
+    mtimeMs: s.mtimeMs,
+    mtime: s.mtime.toISOString(),
+    isDirectory: false,
+  };
+}
+
+// Compare two explicit files (possibly with different names), paired by side.
+// Returns the same { leftPath, rightPath, files } shape as a folder scan, with a
+// single row. `leftFile`/`rightFile` carry absolute paths so /api/diff and the
+// frontend can reference them directly instead of joining a shared relativePath.
+function compareTwoFiles(leftFull, rightFull) {
+  const left = statFile(leftFull);
+  const right = statFile(rightFull);
+
+  let status = 'identical';
+  let newerSide = null;
+  let timeDiffStr = '';
+
+  const timeDiffMs = left.mtimeMs - right.mtimeMs;
+  if (timeDiffMs > 0) { newerSide = 'left'; timeDiffStr = formatDuration(timeDiffMs); }
+  else if (timeDiffMs < 0) { newerSide = 'right'; timeDiffStr = formatDuration(-timeDiffMs); }
+
+  if (left.size !== right.size) {
+    status = 'modified';
+  } else if (getFileHash(leftFull) !== getFileHash(rightFull)) {
+    status = 'modified';
+  }
+
+  // A stable identifier for this synthetic pair (used as the grid/diff key).
+  const pairId = `${left.name} ↔ ${right.name}`;
+
+  return {
+    leftPath: leftFull,
+    rightPath: rightFull,
+    filePairMode: true,
+    files: [{
+      relativePath: pairId,
+      name: left.name,
+      rightName: right.name,
+      isDirectory: false,
+      status,
+      newerSide,
+      timeDiffStr,
+      left,
+      right,
+      leftFile: leftFull,
+      rightFile: rightFull,
+    }],
+  };
+}
+
 // API Route: Scan and compare left and right folders
 app.post('/api/scan', (req, res) => {
   const { leftPath, rightPath, recursive = true, ignore = [] } = req.body;
@@ -264,11 +323,39 @@ app.post('/api/scan', (req, res) => {
   const resolvedLeft = path.resolve(leftPath);
   const resolvedRight = path.resolve(rightPath);
 
-  if (!fs.existsSync(resolvedLeft) || !fs.statSync(resolvedLeft).isDirectory()) {
-    return res.status(400).json({ error: `Left path does not exist or is not a directory: ${leftPath}` });
+  // Classify each side: 'folder' | 'file' | 'missing'.
+  const classify = (p) => {
+    if (!fs.existsSync(p)) return 'missing';
+    return fs.statSync(p).isDirectory() ? 'folder' : 'file';
+  };
+  const leftKind = classify(resolvedLeft);
+  const rightKind = classify(resolvedRight);
+
+  if (leftKind === 'missing') {
+    return res.status(400).json({ error: `Left path does not exist: ${leftPath}` });
   }
-  if (!fs.existsSync(resolvedRight) || !fs.statSync(resolvedRight).isDirectory()) {
-    return res.status(400).json({ error: `Right path does not exist or is not a directory: ${rightPath}` });
+  if (rightKind === 'missing') {
+    return res.status(400).json({ error: `Right path does not exist: ${rightPath}` });
+  }
+
+  // Mixed (one file, one folder) is ambiguous — reject with a clear message.
+  if (leftKind !== rightKind) {
+    const fileSide = leftKind === 'file' ? 'Left' : 'Right';
+    const folderSide = leftKind === 'folder' ? 'Left' : 'Right';
+    return res.status(400).json({
+      error: `${fileSide} is a file and ${folderSide} is a folder. Point both to folders, or both to files.`,
+    });
+  }
+
+  // Both sides are files — return a single file-vs-file comparison row.
+  // The two files may have different names; they are paired purely by side.
+  if (leftKind === 'file') {
+    try {
+      return res.json(compareTwoFiles(resolvedLeft, resolvedRight));
+    } catch (error) {
+      console.error('Error comparing two files:', error);
+      return res.status(500).json({ error: `Failed to compare files: ${error.message}` });
+    }
   }
 
   try {
@@ -394,14 +481,27 @@ app.post('/api/hash', (req, res) => {
 
 // API Route: Compute differences for text files side-by-side
 app.post('/api/diff', (req, res) => {
-  const { leftPath, rightPath, relativePath } = req.body;
-  if (!leftPath || !rightPath || !relativePath) {
-    return res.status(400).json({ error: 'leftPath, rightPath and relativePath are required.' });
-  }
-  const fullLeft = safeJoin(leftPath, relativePath);
-  const fullRight = safeJoin(rightPath, relativePath);
-  if (!fullLeft || !fullRight) {
-    return res.status(400).json({ error: 'Invalid relativePath: path traversal is not allowed.' });
+  const { leftPath, rightPath, relativePath, leftFile, rightFile } = req.body;
+
+  let fullLeft, fullRight;
+
+  // File-pair mode: two explicit (possibly differently-named) file paths.
+  if (leftFile || rightFile) {
+    if (!leftFile || !rightFile) {
+      return res.status(400).json({ error: 'Both leftFile and rightFile are required in file-pair mode.' });
+    }
+    fullLeft = path.resolve(leftFile);
+    fullRight = path.resolve(rightFile);
+  } else {
+    // Folder mode: a shared relativePath joined to each root.
+    if (!leftPath || !rightPath || !relativePath) {
+      return res.status(400).json({ error: 'leftPath, rightPath and relativePath are required.' });
+    }
+    fullLeft = safeJoin(leftPath, relativePath);
+    fullRight = safeJoin(rightPath, relativePath);
+    if (!fullLeft || !fullRight) {
+      return res.status(400).json({ error: 'Invalid relativePath: path traversal is not allowed.' });
+    }
   }
 
   let leftText = '';
@@ -476,7 +576,22 @@ app.post('/api/diff', (req, res) => {
       }
     }
 
-    res.json({ rows });
+    // Unified-diff view (git-style), generated with the same `diff` library.
+    // structuredPatch gives correct @@ hunk headers and context grouping.
+    const leftLabel = path.basename(fullLeft);
+    const rightLabel = path.basename(fullRight);
+    const patch = diff.structuredPatch(leftLabel, rightLabel, leftText, rightText, '', '', { context: 3 });
+    const unified = [];
+    for (const hunk of patch.hunks) {
+      unified.push({ type: 'hunk', text: `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@` });
+      for (const line of hunk.lines) {
+        const c = line[0];
+        const type = c === '+' ? 'added' : c === '-' ? 'removed' : 'context';
+        unified.push({ type, text: line });
+      }
+    }
+
+    res.json({ rows, unified });
   } catch (err) {
     console.error('Diff error:', err);
     res.status(500).json({ error: 'Failed to compute diff' });
