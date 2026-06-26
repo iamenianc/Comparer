@@ -1,66 +1,58 @@
 # Comparer - Folder Comparison Tool
 
-Comparer is a local, high-density folder and file comparison tool optimized for Windows 11. It features deep hashing, two-way sync, transactional backup/undo, real-time filesystem watching, side-by-side and unified text diffing, glob-based exclusions, saved comparison sessions, and a standalone double-clickable Windows executable.
+Comparer is a local, high-density folder and file comparison tool optimized for Windows 11. It features deep hashing, two-way sync, transactional backup/undo, real-time filesystem watching, side-by-side and unified text diffing, glob-based exclusions, and saved comparison sessions. It is an [Electron](https://www.electronjs.org/) desktop app — there is **no local web server and no `localhost` listener**.
 
 ---
 
-## Standalone Executable (no Node.js required)
+## Running the Desktop App
 
-Non-technical users can run Comparer without installing Node.js or using a terminal:
-
-1. Download and unzip `comparer.zip`.
-2. Double-click `comparer.exe`. The local server starts and your default browser
-   opens to the app automatically.
-
-> **First-launch note:** Windows may show a firewall prompt the first time, because
-> the exe opens a local `http://localhost` listener. Allow access on private networks;
-> nothing leaves your machine.
-
-The `comparer.zip` distributable contains `comparer.exe` alongside the `public/` folder
-(static assets). Keep them together when copying.
+Non-technical users run the prebuilt **`Comparer-<version>-portable.exe`**: double-click
+it — no install, no terminal, no firewall prompt (there is no network listener; everything
+stays on your machine). It is a single self-contained file.
 
 ---
 
-## Getting Started
+## Getting Started (from source)
 
 ### Prerequisites
 
-You need **Node.js** (v18 or higher) installed on your system to run from source.
-Building the standalone executable requires **Node.js v20 or higher** (for SEA support).
-End users running the prebuilt `comparer.exe` need nothing installed.
+You need **Node.js** (v18 or higher) to run from source. The first `npm install`
+downloads the Electron runtime binary.
 
 ### Installation
 
 1. Navigate to the repository directory.
-2. Install the lightweight Node.js dependencies:
+2. Install dependencies (this fetches the Electron runtime):
    ```bash
    npm install
    ```
 
 ### Running the App
 
-Start the local server:
 ```bash
-npm start
+npm start          # or: npm run start:electron
 ```
 
-The application will launch a web server listening on port **3000** and open your default
-browser automatically. To suppress the auto-open (e.g. during development), set
-`COMPARER_NO_OPEN=1`. To use a different port, set `PORT`. If the browser does not open,
-navigate to [http://localhost:3000](http://localhost:3000).
+This launches the Electron window directly. There is no port, no browser, and no
+auto-open step — the UI runs inside the app's own window.
 
-### Building the standalone executable
+### Building the portable executable
 
-The standalone `comparer.exe` is produced via [Node.js Single Executable Applications (SEA)](https://nodejs.org/api/single-executable-applications.html).
-Requires Node 20+ and the build devDependencies (`npm install` installs them):
+The distributable is produced with [electron-builder](https://www.electron.build/):
 
 ```bash
-npm run build
+npm run dist
 ```
 
-This bundles `server.js` (and its dependencies) with `esbuild`, generates the SEA blob,
-injects it into a copy of the `node` binary with `postject`, stages `public/` alongside the
-exe, and produces `dist/comparer.exe` and `dist/comparer.zip`. See [scripts/build.mjs](scripts/build.mjs).
+This packages `electron/`, `engine/`, and `public/` into a single portable Windows
+`.exe` under `dist/` (`Comparer-<version>-portable.exe`). No staged `public/` folder is
+required — assets are bundled into the executable.
+
+> **Code signing (recommended for Enterprise rollout):** an unsigned `.exe` triggers
+> Windows SmartScreen on first launch. To produce an Authenticode-signed artifact, set
+> the `CSC_LINK` (path/URL to your `.pfx`) and `CSC_KEY_PASSWORD` environment variables
+> before `npm run dist`; electron-builder signs automatically. Signing removes the
+> SmartScreen warning.
 
 ---
 
@@ -139,8 +131,8 @@ automatic re-scan when a comparison is active.
 
 Each pattern has a **Test** button (🔍) that previews exactly which files it would exclude from
 the current scan paths — the matches are listed inline (per side) without altering the grid or
-requiring a re-scan. It calls `POST /api/ignore-test`, which walks the paths with no filtering and
-reports every entry the single pattern matches.
+requiring a re-scan. It calls the `ignoreTest` IPC channel, which walks the paths with no filtering
+and reports every entry the single pattern matches.
 
 ### Sessions
 
@@ -149,11 +141,13 @@ Open the **Sessions** panel to save and reload named comparison setups. A sessio
 the inputs, ignore list, and active filter, then runs a scan; **Delete** removes a saved session.
 Saving over an existing name asks for overwrite confirmation.
 
-**Team sessions (disk):** sessions are persisted to `.comparer/sessions.json` in the directory you
-run `npm start` from, so anyone running from that project folder sees the same list immediately. The
-panel header shows a **Team (disk)** / **Local (browser)** badge indicating which backend is active.
-If the API is unreachable, the panel transparently falls back to `localStorage` (`comparer_sessions`),
-which is also kept as a mirror so an offline reload still shows the last-known list.
+**Sessions store (disk):** sessions are persisted to `sessions.json` under the per-user app data
+directory (`app.getPath('userData')`), so they survive across runs. The panel header shows a
+**Team (disk)** / **Local (browser)** badge indicating which backend is active; if the IPC store is
+unreachable, the panel transparently falls back to `localStorage` (`comparer_sessions`), kept as a
+mirror so an offline reload still shows the last-known list. Use the panel's **Import** / **Export**
+buttons to move the list to/from any JSON file — e.g. a shared team folder, preserving the old
+"team sessions in a shared folder" workflow now that storage is per-user.
 
 ---
 
@@ -161,52 +155,58 @@ which is also kept as a mirror so an offline reload still shows the last-known l
 
 ### Architecture
 
-The project is structured with a lightweight Express backend and a zero-compilation vanilla HTML/CSS/JS frontend.
+Comparer is an Electron app: a sandboxed vanilla HTML/CSS/JS renderer driving a trusted main
+process over IPC. There is no HTTP server. See [`docs/SECURITY.md`](docs/SECURITY.md) for the
+full trust boundary and the IPC channel list (the app's entire attack surface).
 
-* **Backend (`server.js`)**: Express server exposing API routes for directory operations, diff computation, sync, hashing, and real-time SSE watchers.
+* **Main process (`electron/main.cjs`)**: Creates the locked-down `BrowserWindow`
+  (`contextIsolation`, `sandbox`, `nodeIntegration: false`, strict CSP, navigation/popup blocking),
+  registers one `ipcMain.handle` per channel, writes the audit log, and owns watcher lifecycle.
+* **Preload (`electron/preload.cjs`)**: The thin `contextBridge` that exposes `window.comparer.*`
+  as `ipcRenderer.invoke` wrappers — and nothing else (no `fs`, no `child_process`, no raw
+  `ipcRenderer`).
+* **Engine (`engine/*.cjs`)**: Host-agnostic logic lifted out of the old server —
+  `globs`, `scan`, `diff`, `sync`, `sessions`, `watch`. Pure Node (fs/crypto/chokidar/diff);
+  unit-tested directly via `npm test`.
 * **Frontend (`public/`)**:
-  * `index.html`: Grid structure, diff modal, and the Exclusions / Sessions side panels.
-  * `style.css`: Clean, strict light mode theme implementing Google Material Design guidelines and CSS grid columns.
-  * `app.js`: Main frontend logic, EventSource watcher, grid rendering (with the summary bar,
-    tri-state column sort, and CSV/HTML export), resizing mechanics, diff popup, exclusions
-    (with pattern testing), and disk-backed session management.
+  * `index.html`: Grid structure, diff modal, the Exclusions / Sessions side panels, and the CSP `<meta>`.
+  * `style.css`: Strict light-mode theme; the Material Symbols icon font is vendored locally
+    (`public/fonts/`) so the app runs fully offline under the CSP.
+  * `app.js`: Frontend logic talking to the engine through `window.comparer`, the IPC watcher
+    (`startWatch`/`onWatch`), grid rendering (summary bar, tri-state column sort, CSV/HTML export),
+    resizing, diff view, exclusions (with pattern testing), and session management.
 
 ### Path safety
 
-`/api/sync` and `/api/diff` validate that the user-supplied `relativePath` stays within the
-resolved base directory, rejecting any `..` traversal before reading, writing, or deleting.
+`engine/sync.cjs` and `engine/diff.cjs` validate that the user-supplied `relativePath` stays
+within the resolved base directory (`safeJoin`), rejecting any `..` traversal before reading,
+writing, or deleting — re-validated in the engine regardless of caller.
 
-### Key API Endpoints
+### IPC channels
 
-* **`POST /api/scan`**: Scans the Left and Right paths (folders or individual files).
-  * Body: `{ leftPath: String, rightPath: String, recursive: Boolean, ignore: String[] }`
-  * When both paths are files, returns a single-row `filePairMode` result; when both are
-    folders, returns the full recursive comparison. Mixed (file + folder) is rejected.
-  * `ignore` is a list of glob patterns (`*`, `**`, `?`, literal segments). It is merged
-    with the server-side `DEFAULT_IGNORES` (`**/.git`, `**/node_modules`, `**/Thumbs.db`,
-    `**/.DS_Store`, `**/dist`). Ignored subtrees are pruned **before** any stat/MD5 work,
-    so excluding a large `node_modules` measurably speeds up scans.
-* **`POST /api/hash`**: Returns MD5 hash for a file.
-  * Body: `{ filePath: String }`
-* **`POST /api/diff`**: Calculates line-by-line diff between two files.
-  * Body (folder mode): `{ leftPath: String, rightPath: String, relativePath: String }`
-  * Body (file-pair mode): `{ leftFile: String, rightFile: String }`
-  * Response: `{ rows: Row[], unified: UnifiedLine[] }` — `rows` powers the split view;
-    `unified` (produced by `diff.structuredPatch`) powers the unified view.
-* **`POST /api/sync`**: Executes a copy/delete sync operation. Creates a backup before modifying any files.
-  * Body: `{ leftPath: String, rightPath: String, relativePath: String, action: 'keepLeft' | 'keepRight' | 'deleteLeft' | 'deleteRight' }`
-* **`POST /api/undo`**: Restores the last sync action using backed up files stored in the OS temp directory.
-* **`GET /api/watch`**: Establishes a Server-Sent Events (SSE) connection mapping real-time `chokidar` filesystem event alerts.
-* **`POST /api/ignore-test`**: Previews which files a single glob would exclude from the given paths.
-  * Body: `{ leftPath: String, rightPath: String, recursive: Boolean, pattern: String }`
-  * Response: `{ pattern, count, matches: [{ side, relativePath }], truncated }`. Read-only — it
-    walks both trees with no ignore filtering and reports every entry the pattern matches (capped
-    at 500 matches, with `truncated: true` when more exist).
-* **`GET /api/sessions`** / **`POST /api/sessions`**: Read and overwrite the shared, disk-backed
-  session list stored at `.comparer/sessions.json` (relative to the server's working directory).
-  * `GET` → `{ sessions: Session[] }` (empty array if the file is absent).
-  * `POST` body: `{ sessions: Session[] }` — the client owns the full list (load-all / mutate /
-    save-all). The frontend falls back to `localStorage` if these routes are unreachable.
+The renderer reaches privileged code only through these channels (full table in
+[`docs/SECURITY.md`](docs/SECURITY.md)). Each handler validates input, wraps the engine call in
+try/catch, and returns `{ ok, data }` / `{ ok, error }` — never a raw error or stack trace.
+
+* **`comparer:scan`** — `scan({ leftPath, rightPath, recursive, ignore[] })`. Both files →
+  single-row `filePairMode`; both folders → full recursive comparison; mixed is rejected.
+  `ignore` globs (`*`, `**`, `?`, literals) merge with `DEFAULT_IGNORES` (`**/.git`,
+  `**/node_modules`, `**/Thumbs.db`, `**/.DS_Store`, `**/dist`); ignored subtrees are pruned
+  **before** any stat/MD5 work.
+* **`comparer:hash`** — `hash({ filePath })` → `{ hash }` (MD5).
+* **`comparer:diff`** — `diff({ leftPath, rightPath, relativePath })` (folder mode) or
+  `diff({ leftFile, rightFile })` (file-pair mode) → `{ rows, unified }`.
+* **`comparer:sync`** — `sync({ leftPath, rightPath, relativePath, action })` with `action` one of
+  `keepLeft | keepRight | deleteLeft | deleteRight`. Backs up before modifying; appends to the audit log.
+* **`comparer:undo`** — `undo()`. Restores the most recent sync from the temp-dir backup; appends to the audit log.
+* **`comparer:watch:start` / `:stop`** + push event **`comparer:watch:event`** — live `chokidar`
+  events delivered to `window.comparer.onWatch(cb)` (replaces the old SSE stream).
+* **`comparer:ignore-test`** — `ignoreTest({ leftPath, rightPath, recursive, pattern })` →
+  `{ pattern, count, matches: [{ side, relativePath }], truncated }`. Read-only; capped at 500 matches.
+* **`comparer:sessions:get` / `:set` / `:export` / `:import`** — read/overwrite the per-user session
+  store, or move it to/from a JSON file via a native dialog.
+* **`comparer:read-asset`** — read a bundled asset (basename under `public/`) so the HTML diff
+  export can inline `style.css`.
 
 ### CSS Custom Layout Grid
 

@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- Content-Security-Policy: lock the renderer to its own bundled assets. This
+       is the in-document half of the policy; electron/main.cjs also sets it as a
+       response header. Everything (scripts, styles, the Material Symbols icon
+       font) is served from 'self' — no network origins are allowed. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'">
   <title>Comparer - Folder Comparison Tool</title>
-  <!-- Google Fonts -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <!-- Google Material Symbols -->
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20,400,0,0" />
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -366,6 +366,16 @@
         </button>
         <ul class="side-panel-list" id="sessions-list"></ul>
       </div>
+      <footer class="side-panel-footer side-panel-session-io">
+        <button class="header-tool-btn" id="import-sessions-btn" title="Import sessions from a JSON file (e.g. a shared team file)">
+          <span class="material-symbols-outlined">upload</span>
+          <span>Import</span>
+        </button>
+        <button class="header-tool-btn" id="export-sessions-btn" title="Export sessions to a JSON file (e.g. a shared team folder)">
+          <span class="material-symbols-outlined">download</span>
+          <span>Export</span>
+        </button>
+      </footer>
     </aside>
   </div>
 

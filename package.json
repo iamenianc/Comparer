@@ -1,14 +1,13 @@
 {
   "name": "foldercompare",
   "version": "1.0.0",
-  "description": "Folder comparison tool optimized for Windows 11 Enterprise.",
-  "main": "server.js",
+  "description": "Folder comparison tool for Windows 11 Enterprise. Electron desktop app (no local HTTP server).",
+  "main": "electron/main.cjs",
   "scripts": {
-    "start": "node server.js",
-    "build:bundle": "esbuild server.js --bundle --platform=node --format=cjs --target=node20 --external:fsevents --outfile=dist/bundle.cjs",
-    "build:blob": "node --experimental-sea-config sea-config.json",
-    "build": "node scripts/build.mjs",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "electron electron/main.cjs",
+    "start:electron": "electron electron/main.cjs",
+    "dist": "electron-builder --win portable",
+    "test": "node tests/engine.test.cjs"
   },
   "repository": {
     "type": "git",
@@ -17,22 +16,31 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "module",
   "bugs": {
     "url": "https://github.com/iamenianc/Comparer/issues"
   },
   "homepage": "https://github.com/iamenianc/Comparer#readme",
   "dependencies": {
     "chokidar": "^5.0.0",
-    "diff": "^9.0.0",
-    "express": "^5.2.1",
-    "mime-types": "^3.0.2"
+    "diff": "^9.0.0"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0",
-    "postject": "^1.0.0-alpha.6"
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
   },
-  "allowScripts": {
-    "esbuild@0.25.12": true
+  "build": {
+    "appId": "com.comparer.app",
+    "productName": "Comparer",
+    "files": [
+      "electron/**/*",
+      "engine/**/*",
+      "public/**/*"
+    ],
+    "win": {
+      "target": "portable"
+    },
+    "portable": {
+      "artifactName": "Comparer-${version}-portable.exe"
+    }
   }
 }

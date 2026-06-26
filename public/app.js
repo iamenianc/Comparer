@@ -5,7 +5,15 @@ let currentFilter = 'all';
 let searchQuery = '';
 const collapsedFolders = new Set();
 let lastScanParams = null;
-let eventSource = null;
+
+// IPC adapter: the renderer talks to the Electron main process exclusively
+// through window.comparer (exposed by preload.cjs). Each method returns the
+// unwrapped response data or throws an Error — the same contract the old
+// fetch()+JSON code expected. No HTTP, no localhost listener.
+const comparer = window.comparer;
+
+// Active filesystem-watch subscription (replaces the SSE EventSource).
+let watchUnsub = null;
 
 // --- Exclusions (ignored globs) state ---
 const DEFAULT_IGNORE_GLOBS = ['**/.git', '**/node_modules', '**/Thumbs.db', '**/.DS_Store', '**/dist'];
@@ -159,17 +167,7 @@ async function runScan() {
   `;
 
   try {
-    const response = await fetch('/api/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(lastScanParams)
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      throw new Error(data.error || 'Server error comparing folders.');
-    }
+    const data = await comparer.scan(lastScanParams);
 
     scanResult = data;
     leftPathInput.value = data.leftPath;
@@ -281,49 +279,56 @@ function updateHeaders() {
   }
 }
 
-// Setup EventSource for SSE watcher connection
+// Start the live filesystem watcher over IPC (replaces the SSE EventSource).
+// The main process pushes events with the same { event, relativePath, side }
+// shape the SSE stream emitted, so the refresh logic is unchanged.
 function setupSSEWatcher() {
-  if (eventSource) {
-    eventSource.close();
-  }
-  eventSource = new EventSource('/api/watch');
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      console.log('Real-time SSE event:', data);
-      refreshScanSilent();
-    } catch (e) {
-      console.error('Error parsing SSE event:', e);
-    }
-  };
-  eventSource.onerror = (err) => {
-    console.warn('SSE connection interrupted, retrying...', err);
-  };
+  if (!scanResult) return;
+
+  // Tear down any previous subscription + watcher before starting a new one.
+  stopWatcher();
+
+  const ignore = lastScanParams ? lastScanParams.ignore : ignoreGlobs;
+  comparer
+    .startWatch({ leftPath: scanResult.leftPath, rightPath: scanResult.rightPath, ignore })
+    .catch((err) => console.warn('Watch start failed:', err.message));
+
+  watchUnsub = comparer.onWatch((data) => {
+    console.log('Real-time watch event:', data);
+    refreshScanSilent();
+  });
 }
+
+// Unsubscribe from watch events and stop the main-process watchers.
+function stopWatcher() {
+  if (watchUnsub) {
+    watchUnsub();
+    watchUnsub = null;
+  }
+  comparer.stopWatch().catch(() => {});
+}
+
+// Ensure watchers are torn down when the window unloads.
+window.addEventListener('beforeunload', () => {
+  if (watchUnsub) watchUnsub();
+});
 
 // Silent scan refresh keeping scroll and folders
 async function refreshScanSilent() {
   if (!lastScanParams) return;
   try {
-    const response = await fetch('/api/scan', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(lastScanParams)
-    });
-    const data = await response.json();
-    if (response.ok) {
-      scanResult = data;
-      updateTabCounts();
-      updateHeaders();
+    const data = await comparer.scan(lastScanParams);
+    scanResult = data;
+    updateTabCounts();
+    updateHeaders();
 
-      const scrollParent = document.querySelector('.grid-scroll-container');
-      const scrollTop = scrollParent ? scrollParent.scrollTop : 0;
-      const scrollLeft = scrollParent ? scrollParent.scrollLeft : 0;
-      renderGrid();
-      if (scrollParent) {
-        scrollParent.scrollTop = scrollTop;
-        scrollParent.scrollLeft = scrollLeft;
-      }
+    const scrollParent = document.querySelector('.grid-scroll-container');
+    const scrollTop = scrollParent ? scrollParent.scrollTop : 0;
+    const scrollLeft = scrollParent ? scrollParent.scrollLeft : 0;
+    renderGrid();
+    if (scrollParent) {
+      scrollParent.scrollTop = scrollTop;
+      scrollParent.scrollLeft = scrollLeft;
     }
   } catch (error) {
     console.error('Silent refresh failed:', error);
@@ -363,12 +368,7 @@ function isBinaryFile(filename) {
 // Helper: request MD5 hash of a file
 async function getFileHashFromServer(filePath) {
   try {
-    const res = await fetch('/api/hash', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath })
-    });
-    const data = await res.json();
+    const data = await comparer.hash({ filePath });
     return data.hash || 'Unavailable';
   } catch (e) {
     console.error('Failed to get file hash:', e);
@@ -380,21 +380,13 @@ async function getFileHashFromServer(filePath) {
 async function performSyncAction(relativePath, action) {
   if (!scanResult) return;
   try {
-    const response = await fetch('/api/sync', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        leftPath: scanResult.leftPath,
-        rightPath: scanResult.rightPath,
-        relativePath,
-        action
-      })
+    await comparer.sync({
+      leftPath: scanResult.leftPath,
+      rightPath: scanResult.rightPath,
+      relativePath,
+      action
     });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to complete sync operation.');
-    }
-    
+
     // Show Google-styled Undo toast banner
     showUndoToast(relativePath, action);
     
@@ -408,11 +400,7 @@ async function performSyncAction(relativePath, action) {
 // Undo API handler
 async function undoLastAction() {
   try {
-    const response = await fetch('/api/undo', { method: 'POST' });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.error || 'Failed to undo action.');
-    }
+    await comparer.undo();
     hideUndoToast();
     statusText.textContent = 'Undo completed';
     await refreshScanSilent();
@@ -454,8 +442,8 @@ let _styleCssText = null;
 async function getStyleCssText() {
   if (_styleCssText !== null) return _styleCssText;
   try {
-    const res = await fetch(`${window.location.origin}/style.css`);
-    _styleCssText = await res.text();
+    const data = await comparer.readAsset('style.css');
+    _styleCssText = data.content;
   } catch {
     _styleCssText = '';
   }
@@ -807,13 +795,7 @@ async function openDiffWindow(file) {
   });
 
   try {
-    const res = await fetch('/api/diff', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(diffRequestBody(file))
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+    const data = await comparer.diff(diffRequestBody(file));
     if (win.closed) return;
 
     leftCode.innerHTML = '';
@@ -979,18 +961,12 @@ async function showDiffModal(file) {
     diffModal.classList.remove('hidden');
     
     try {
-      const res = await fetch('/api/diff', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          leftPath: scanResult.leftPath,
-          rightPath: scanResult.rightPath,
-          relativePath
-        })
+      const data = await comparer.diff({
+        leftPath: scanResult.leftPath,
+        rightPath: scanResult.rightPath,
+        relativePath
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      
+
       // Render side-by-side lines
       diffLeftCode.innerHTML = '';
       diffRightCode.innerHTML = '';
@@ -1878,13 +1854,7 @@ async function testIgnorePattern(glob, resultsEl) {
 
   resultsEl.innerHTML = `<div class="exclusion-test-hint">Testing…</div>`;
   try {
-    const res = await fetch('/api/ignore-test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ leftPath, rightPath, recursive, pattern: glob }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Test failed.');
+    const data = await comparer.ignoreTest({ leftPath, rightPath, recursive, pattern: glob });
 
     if (data.count === 0) {
       resultsEl.innerHTML = `<div class="exclusion-test-hint">No files match this pattern in the current paths.</div>`;
@@ -1982,9 +1952,7 @@ function loadSessionsLocal() {
 // cache if the API is unreachable. Sets `sessionsBackend` to whichever was used.
 async function loadSessions() {
   try {
-    const res = await fetch('/api/sessions');
-    if (!res.ok) throw new Error('api');
-    const data = await res.json();
+    const data = await comparer.getSessions();
     const sessions = Array.isArray(data.sessions) ? data.sessions : [];
     sessionsBackend = 'disk';
     // Mirror to the local cache so an offline reload still shows the list.
@@ -2001,12 +1969,7 @@ async function loadSessions() {
 async function saveSessions(sessions) {
   localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
   try {
-    const res = await fetch('/api/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessions }),
-    });
-    if (!res.ok) throw new Error('api');
+    await comparer.setSessions(sessions);
     sessionsBackend = 'disk';
   } catch (e) {
     sessionsBackend = 'local';
@@ -2120,6 +2083,30 @@ document.getElementById('open-sessions-btn').addEventListener('click', () => {
 });
 document.getElementById('close-sessions-btn').addEventListener('click', () => {
   sessionsOverlay.classList.add('hidden');
+});
+
+// Import/export the shared session list to/from a JSON file. This preserves the
+// old "team sessions in a shared folder" workflow now that the store lives in
+// the per-user app data directory. Both open a native file dialog in the main
+// process.
+document.getElementById('export-sessions-btn').addEventListener('click', async () => {
+  try {
+    const res = await comparer.exportSessions();
+    if (!res.canceled) statusText.textContent = `Exported ${res.count} session(s)`;
+  } catch (err) {
+    alert(`Export failed: ${err.message}`);
+  }
+});
+document.getElementById('import-sessions-btn').addEventListener('click', async () => {
+  try {
+    const res = await comparer.importSessions();
+    if (res.canceled) return;
+    localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(res.sessions));
+    await renderSessions();
+    statusText.textContent = `Imported ${res.sessions.length} session(s)`;
+  } catch (err) {
+    alert(`Import failed: ${err.message}`);
+  }
 });
 sessionsOverlay.addEventListener('click', (e) => {
   if (e.target === sessionsOverlay) sessionsOverlay.classList.add('hidden');
